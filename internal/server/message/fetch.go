@@ -14,6 +14,7 @@ import (
 	"raven/internal/delivery/parser"
 	"raven/internal/models"
 	"raven/internal/server/response"
+	"raven/internal/server/utils"
 )
 
 // ===== FETCH =====
@@ -90,80 +91,24 @@ func HandleFetch(deps ServerDeps, conn net.Conn, tag string, parts []string, sta
 		items = strings.Trim(items, "()")
 	}
 
-	var rows *sql.Rows
+	// Support sequence sets: single numbers, ranges (1:5, 1:*, *), and comma-separated
+	// combinations of both (1,3,5 / 1:3,7,9:*)
+	seqNums := utils.ParseSequenceSetWithDB(sequence, state.SelectedMailboxID, targetDB)
+	if len(seqNums) == 0 {
+		deps.SendResponse(conn, fmt.Sprintf("%s BAD Invalid sequence number", tag))
+		return
+	}
 
-	// Support for sequence ranges (e.g., 1:2, 2:4, 1:*, *)
-	seqRange := strings.Split(sequence, ":")
-	var start, end int
-	var useRange bool
-
-	if len(seqRange) == 2 {
-		useRange = true
-		if seqRange[0] == "*" {
-			start = -1 // will handle below
-		} else {
-			start, err = strconv.Atoi(seqRange[0])
-			if err != nil || start < 1 {
-				deps.SendResponse(conn, fmt.Sprintf("%s BAD Invalid sequence number", tag))
-				return
-			}
-		}
-		if seqRange[1] == "*" {
-			// Get max count for end using new schema
-			end, _ = db.GetMessageCountPerUser(targetDB, state.SelectedMailboxID)
-		} else {
-			end, err = strconv.Atoi(seqRange[1])
-			if err != nil || end < 1 {
-				deps.SendResponse(conn, fmt.Sprintf("%s BAD Invalid sequence number", tag))
-				return
-			}
-		}
-		if start == -1 {
-			start = end
-		}
-		if end < start {
-			end = start
-		}
-		// Query message_mailbox for messages in selected mailbox using new schema
-		query := `SELECT mm.message_id, mm.uid, mm.flags
-		          FROM message_mailbox mm
-		          WHERE mm.mailbox_id = ?
-		          ORDER BY mm.uid ASC LIMIT ? OFFSET ?`
-		rows, err = targetDB.Query(query, state.SelectedMailboxID, end-start+1, start-1)
-	} else if sequence == "1:*" || sequence == "*" {
-		query := `SELECT mm.message_id, mm.uid, mm.flags
-		          FROM message_mailbox mm
-		          WHERE mm.mailbox_id = ?
-		          ORDER BY mm.uid ASC`
-		rows, err = targetDB.Query(query, state.SelectedMailboxID)
-	} else {
-		msgNum, parseErr := strconv.Atoi(sequence)
-		if parseErr != nil {
-			deps.SendResponse(conn, fmt.Sprintf("%s BAD Invalid sequence number", tag))
-			return
-		}
+	for _, seqNum := range seqNums {
+		var messageID int64
+		var uid int64
+		var flagsStr sql.NullString
 		query := `SELECT mm.message_id, mm.uid, mm.flags
 		          FROM message_mailbox mm
 		          WHERE mm.mailbox_id = ?
 		          ORDER BY mm.uid ASC LIMIT 1 OFFSET ?`
-		rows, err = targetDB.Query(query, state.SelectedMailboxID, msgNum-1)
-	}
-
-	if err != nil {
-		deps.SendResponse(conn, fmt.Sprintf("%s NO Database error", tag))
-		return
-	}
-	defer func() { _ = rows.Close() }()
-
-	seqNum := 1
-	if useRange {
-		seqNum = start
-	}
-	for rows.Next() {
-		var messageID int64
-		var uid int64
-		var flagsStr sql.NullString
-		if err := rows.Scan(&messageID, &uid, &flagsStr); err != nil {
+		err := targetDB.QueryRow(query, state.SelectedMailboxID, seqNum-1).Scan(&messageID, &uid, &flagsStr)
+		if err != nil {
 			continue
 		}
 
@@ -174,7 +119,6 @@ func HandleFetch(deps ServerDeps, conn net.Conn, tag string, parts []string, sta
 
 		// Process this message
 		processFetchForMessage(deps, conn, messageID, uid, seqNum, flags, items, state)
-		seqNum++
 	}
 
 	deps.SendResponse(conn, fmt.Sprintf("%s OK FETCH completed", tag))
