@@ -393,6 +393,56 @@ func TestFetchCommand_SequenceRange(t *testing.T) {
 	}
 }
 
+// TestFetchCommand_CommaSequenceSet tests FETCH with a comma-separated sequence set
+func TestFetchCommand_CommaSequenceSet(t *testing.T) {
+	srv := server.SetupTestServerSimple(t)
+	conn := server.NewMockConn()
+	database := server.GetDatabaseFromServer(srv)
+
+	userID := server.CreateTestUser(t, database, "testuser")
+	server.InsertTestMail(t, database, "testuser", "Message 1", "sender@test.com", "testuser@localhost", "INBOX")
+	server.InsertTestMail(t, database, "testuser", "Message 2", "sender@test.com", "testuser@localhost", "INBOX")
+	server.InsertTestMail(t, database, "testuser", "Message 3", "sender@test.com", "testuser@localhost", "INBOX")
+	server.InsertTestMail(t, database, "testuser", "Message 4", "sender@test.com", "testuser@localhost", "INBOX")
+	server.InsertTestMail(t, database, "testuser", "Message 5", "sender@test.com", "testuser@localhost", "INBOX")
+
+	mailboxID, _ := server.GetMailboxID(t, database, userID, "INBOX")
+
+	state := &models.ClientState{
+		Authenticated:     true,
+		UserID:            userID,
+		Username:          "testuser",
+		SelectedMailboxID: mailboxID,
+	}
+
+	// Test comma-separated sequence set 1,3,5
+	srv.HandleFetch(conn, "F014", []string{"F014", "FETCH", "1,3,5", "FLAGS"}, state)
+
+	response := conn.GetWrittenData()
+
+	if strings.Contains(response, "BAD") {
+		t.Errorf("Expected comma-separated sequence set to be accepted, got: %s", response)
+	}
+	if !strings.Contains(response, "* 1 FETCH") {
+		t.Errorf("Expected message 1 in response, got: %s", response)
+	}
+	if !strings.Contains(response, "* 3 FETCH") {
+		t.Errorf("Expected message 3 in response, got: %s", response)
+	}
+	if !strings.Contains(response, "* 5 FETCH") {
+		t.Errorf("Expected message 5 in response, got: %s", response)
+	}
+	if strings.Contains(response, "* 2 FETCH") {
+		t.Errorf("Did not expect message 2 in response, got: %s", response)
+	}
+	if strings.Contains(response, "* 4 FETCH") {
+		t.Errorf("Did not expect message 4 in response, got: %s", response)
+	}
+	if !strings.Contains(response, "F014 OK FETCH completed") {
+		t.Errorf("Expected completion, got: %s", response)
+	}
+}
+
 // TestFetchCommand_MultipleItems tests FETCH with multiple items
 func TestFetchCommand_MultipleItems(t *testing.T) {
 	srv := server.SetupTestServerSimple(t)
