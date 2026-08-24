@@ -209,7 +209,6 @@ func processFetchForMessage(deps ServerDeps, conn net.Conn, messageID, uid int64
 
 	itemsUpper := strings.ToUpper(items)
 	responseParts := []string{}
-	var literalData string // Store literal data separately
 
 	if strings.Contains(itemsUpper, "UID") {
 		responseParts = append(responseParts, fmt.Sprintf("UID %d", uid))
@@ -403,16 +402,12 @@ func processFetchForMessage(deps ServerDeps, conn net.Conn, messageID, uid int64
 					if payload == "" {
 						responseParts = append(responseParts, fmt.Sprintf("BODY[%s] NIL", sectionSpec))
 					} else {
-						if literalData != "" {
-							literalData += " "
-						}
 						// Include partial start position in response if this was a partial fetch
+						name := fmt.Sprintf("BODY[%s]", sectionSpec)
 						if partialStartPos >= 0 {
-							responseParts = append(responseParts, fmt.Sprintf("BODY[%s]<%d>", sectionSpec, partialStartPos))
-						} else {
-							responseParts = append(responseParts, fmt.Sprintf("BODY[%s]", sectionSpec))
+							name = fmt.Sprintf("BODY[%s]<%d>", sectionSpec, partialStartPos)
 						}
-						literalData += fmt.Sprintf("{%d}\r\n%s", len(payload), payload)
+						responseParts = append(responseParts, fmt.Sprintf("%s {%d}\r\n%s", name, len(payload), payload))
 					}
 				}
 			}
@@ -497,8 +492,7 @@ func processFetchForMessage(deps ServerDeps, conn net.Conn, messageID, uid int64
 		headersStr += "\r\n" // Final blank line
 		// Match the exact format the client requested
 		fieldList := strings.Join(requestedHeaders, " ")
-		responseParts = append(responseParts, fmt.Sprintf("BODY[HEADER.FIELDS (%s)]", fieldList))
-		literalData = fmt.Sprintf("{%d}\r\n%s", len(headersStr), headersStr)
+		responseParts = append(responseParts, fmt.Sprintf("BODY[HEADER.FIELDS (%s)] {%d}\r\n%s", fieldList, len(headersStr), headersStr))
 	}
 
 	// Handle BODY.PEEK[TEXT] or BODY[TEXT] - message body only (can be combined with other parts)
@@ -531,11 +525,7 @@ func processFetchForMessage(deps ServerDeps, conn net.Conn, messageID, uid int64
 			}
 		}
 
-		if literalData != "" {
-			literalData += " "
-		}
-		responseParts = append(responseParts, "BODY[TEXT]")
-		literalData += fmt.Sprintf("{%d}\r\n%s", len(body), body)
+		responseParts = append(responseParts, fmt.Sprintf("BODY[TEXT] {%d}\r\n%s", len(body), body))
 	}
 
 	// Handle BODY.PEEK[HEADER] or BODY[HEADER] - all headers (check it's not HEADER.FIELDS)
@@ -547,11 +537,7 @@ func processFetchForMessage(deps ServerDeps, conn net.Conn, messageID, uid int64
 		if headerEnd != -1 {
 			headers = msg[:headerEnd+2] // include last CRLF
 		}
-		if literalData != "" {
-			literalData += " "
-		}
-		responseParts = append(responseParts, "BODY[HEADER]")
-		literalData += fmt.Sprintf("{%d}\r\n%s", len(headers), headers)
+		responseParts = append(responseParts, fmt.Sprintf("BODY[HEADER] {%d}\r\n%s", len(headers), headers))
 	}
 
 	// Handle RFC822.HEADER - return only the header portion
@@ -562,11 +548,7 @@ func processFetchForMessage(deps ServerDeps, conn net.Conn, messageID, uid int64
 		if headerEnd != -1 {
 			headers = msg[:headerEnd+2] // include last CRLF
 		}
-		if literalData != "" {
-			literalData += " "
-		}
-		responseParts = append(responseParts, "RFC822.HEADER")
-		literalData += fmt.Sprintf("{%d}\r\n%s", len(headers), headers)
+		responseParts = append(responseParts, fmt.Sprintf("RFC822.HEADER {%d}\r\n%s", len(headers), headers))
 	}
 
 	// Handle RFC822.TEXT - body text only (excluding headers)
@@ -577,11 +559,7 @@ func processFetchForMessage(deps ServerDeps, conn net.Conn, messageID, uid int64
 		if headerEnd != -1 {
 			body = msg[headerEnd+4:] // skip the double CRLF
 		}
-		if literalData != "" {
-			literalData += " "
-		}
-		responseParts = append(responseParts, "RFC822.TEXT")
-		literalData += fmt.Sprintf("{%d}\r\n%s", len(body), body)
+		responseParts = append(responseParts, fmt.Sprintf("RFC822.TEXT {%d}\r\n%s", len(body), body))
 	}
 
 	// Handle BODY[] / BODY.PEEK[] / RFC822 / RFC822.PEEK - full message
@@ -590,20 +568,11 @@ func processFetchForMessage(deps ServerDeps, conn net.Conn, messageID, uid int64
 		(strings.Contains(itemsUpper, "RFC822") && !strings.Contains(itemsUpper, "RFC822.SIZE") &&
 			!strings.Contains(itemsUpper, "RFC822.HEADER") && !strings.Contains(itemsUpper, "RFC822.TEXT") && !strings.Contains(itemsUpper, "RFC822.PEEK")) {
 		msg := loadRawMsg()
-		if literalData != "" {
-			literalData += " "
-		}
-		responseParts = append(responseParts, "BODY[]")
-		literalData += fmt.Sprintf("{%d}\r\n%s", len(msg), msg)
+		responseParts = append(responseParts, fmt.Sprintf("BODY[] {%d}\r\n%s", len(msg), msg))
 	}
 
 	if len(responseParts) > 0 {
-		responseStr := fmt.Sprintf("* %d FETCH (%s", seqNum, strings.Join(responseParts, " "))
-		if literalData != "" {
-			responseStr += " " + literalData + ")"
-		} else {
-			responseStr += ")"
-		}
+		responseStr := fmt.Sprintf("* %d FETCH (%s)", seqNum, strings.Join(responseParts, " "))
 		deps.SendResponse(conn, responseStr)
 	} else {
 		deps.SendResponse(conn, fmt.Sprintf("* %d FETCH (FLAGS ())", seqNum))
