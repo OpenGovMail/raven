@@ -26,7 +26,7 @@ func NewTestInterface(server *IMAPServer) *TestInterface {
 
 // HandleCapability exposes the capability handler for testing
 func (t *TestInterface) HandleCapability(conn net.Conn, tag string, state *models.ClientState) {
-	auth.HandleCapability(t.server, conn, tag, state)
+	auth.HandleCapability(t.server, conn, tag, []string{tag, "CAPABILITY"}, state)
 }
 
 // HandleLogin exposes the login handler for testing

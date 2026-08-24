@@ -52,7 +52,7 @@ func handleClient(s *IMAPServer, conn net.Conn, state *models.ClientState) {
 
 		switch cmd {
 		case "CAPABILITY":
-			auth.HandleCapability(s, conn, tag, state)
+			auth.HandleCapability(s, conn, tag, parts, state)
 		case "LOGIN":
 			auth.HandleLogin(s, conn, tag, parts, state)
 		case "AUTHENTICATE":
