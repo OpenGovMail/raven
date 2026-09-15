@@ -67,7 +67,12 @@ func buildCapabilities(deps ServerDeps, isTLS bool) []string {
 	return capabilities
 }
 
-func HandleCapability(deps ServerDeps, conn net.Conn, tag string, state *models.ClientState) {
+func HandleCapability(deps ServerDeps, conn net.Conn, tag string, parts []string, state *models.ClientState) {
+	// RFC 3501: CAPABILITY takes no arguments.
+	if len(parts) > 2 {
+		deps.SendResponse(conn, fmt.Sprintf("%s BAD CAPABILITY takes no arguments", tag))
+		return
+	}
 	// Detect TLS: real TLS connection or test mock that advertises TLS
 	isTLS := false
 	if _, ok := conn.(*tls.Conn); ok {
