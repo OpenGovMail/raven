@@ -118,6 +118,8 @@ func (s *Server) Start() error {
 			return fmt.Errorf("failed to start UNIX listener: %w", err)
 		}
 		log.Printf("Started Unix socket listener: %s", s.socketPath)
+	} else if s.socketPath == "" {
+		log.Printf("Skipping Unix socket listener: no socket path configured")
 	} else {
 		log.Printf("Skipping Unix socket listener (scope: %s, only TCP connections are allowed)", s.saslScope)
 	}
@@ -128,6 +130,8 @@ func (s *Server) Start() error {
 			return fmt.Errorf("failed to start TCP listener: %w", err)
 		}
 		log.Printf("Started TCP listener: %s", s.tcpAddr)
+	} else if s.tcpAddr == "" {
+		log.Printf("Skipping TCP listener: no TCP address configured")
 	} else {
 		log.Printf("Skipping TCP listener (scope: %s, only Unix socket connections are allowed)", s.saslScope)
 	}
