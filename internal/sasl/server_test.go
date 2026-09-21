@@ -2,9 +2,11 @@ package sasl_test
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"log"
 	"math/rand"
 	"net"
 	"net/http"
@@ -18,6 +20,23 @@ import (
 	"testing"
 	"time"
 )
+
+type synchronizedLogBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *synchronizedLogBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *synchronizedLogBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
 
 // getSocketPath returns a short socket path to avoid Unix socket path length limits (104 chars on macOS)
 func getSocketPath(t *testing.T) string {
@@ -44,6 +63,135 @@ func TestNewServer(t *testing.T) {
 
 	// Note: Cannot test private fields from external package
 	// Tests now focus on public API behavior
+}
+
+func TestServerListenerStartupLogs(t *testing.T) {
+	tests := []struct {
+		name      string
+		socket    bool
+		tcp       bool
+		scope     conf.SASLScope
+		wantLogs  []string
+		avoidLogs []string
+	}{
+		{
+			name:   "all listeners enabled",
+			socket: true,
+			tcp:    true,
+			scope:  conf.SASLScopeAll,
+			wantLogs: []string{
+				"SASL server listening on Unix socket:",
+				"SASL server listening on TCP:",
+			},
+			avoidLogs: []string{
+				"Skipping Unix socket listener",
+				"Skipping TCP listener",
+			},
+		},
+		{
+			name:   "TCP-only scope",
+			socket: true,
+			tcp:    true,
+			scope:  conf.SASLScopeTCPOnly,
+			wantLogs: []string{
+				"Skipping Unix socket listener (scope: tcp_only",
+				"SASL server listening on TCP:",
+			},
+			avoidLogs: []string{"Skipping TCP listener"},
+		},
+		{
+			name:   "Unix-socket-only scope",
+			socket: true,
+			tcp:    true,
+			scope:  conf.SASLScopeUnixSocketOnly,
+			wantLogs: []string{
+				"SASL server listening on Unix socket:",
+				"Skipping TCP listener (scope: unix_socket_only",
+			},
+			avoidLogs: []string{"Skipping Unix socket listener"},
+		},
+		{
+			name:  "unset Unix socket path",
+			tcp:   true,
+			scope: conf.SASLScopeAll,
+			wantLogs: []string{
+				"Skipping Unix socket listener: no socket path configured",
+				"SASL server listening on TCP:",
+			},
+		},
+		{
+			name:   "unset TCP address",
+			socket: true,
+			scope:  conf.SASLScopeAll,
+			wantLogs: []string{
+				"SASL server listening on Unix socket:",
+				"Skipping TCP listener: no TCP address configured",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			logBuffer := &synchronizedLogBuffer{}
+			originalLogOutput := log.Writer()
+			log.SetOutput(logBuffer)
+			defer log.SetOutput(originalLogOutput)
+
+			socketPath := ""
+			if tt.socket {
+				socketPath = getSocketPath(t)
+			}
+			tcpAddr := ""
+			if tt.tcp {
+				tcpAddr = "127.0.0.1:0"
+			}
+			server := sasl.NewServer(socketPath, tcpAddr, "https://example.com/auth", "example.com", tt.scope)
+			errChan := make(chan error, 1)
+			go func() {
+				errChan <- server.Start()
+			}()
+
+			deadline := time.Now().Add(2 * time.Second)
+			for {
+				logs := logBuffer.String()
+				allPresent := true
+				for _, expected := range tt.wantLogs {
+					if !strings.Contains(logs, expected) {
+						allPresent = false
+						break
+					}
+				}
+				if allPresent {
+					break
+				}
+				if time.Now().After(deadline) {
+					_ = server.Shutdown()
+					t.Fatalf("expected startup log messages %q, got:\n%s", tt.wantLogs, logs)
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+
+			logs := logBuffer.String()
+			for _, unexpected := range tt.avoidLogs {
+				if strings.Contains(logs, unexpected) {
+					_ = server.Shutdown()
+					t.Fatalf("did not expect startup log message %q, got:\n%s", unexpected, logs)
+				}
+			}
+
+			if err := server.Shutdown(); err != nil {
+				t.Fatalf("server shutdown failed: %v", err)
+			}
+			select {
+			case err := <-errChan:
+				if err != nil {
+					t.Fatalf("server returned error: %v", err)
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatal("server did not stop within timeout")
+			}
+		})
+	}
 }
 
 // TestServerStartShutdown tests server startup and graceful shutdown
