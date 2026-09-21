@@ -112,19 +112,25 @@ func (s *Server) Start() error {
 	log.Println("Starting SASL server...")
 	log.Printf("SASL Scope: %s", s.saslScope)
 
-	// Start UNIX socket listener only if scope allows it
-	if s.socketPath != "" && (s.saslScope == conf.SASLScopeUnixSocketOnly || s.saslScope == conf.SASLScopeAll) {
+	// Start the UNIX socket listener if it is configured and allowed by the scope.
+	if s.socketPath == "" {
+		log.Println("Skipping Unix socket listener: no socket path configured")
+	} else if s.saslScope == conf.SASLScopeUnixSocketOnly || s.saslScope == conf.SASLScopeAll {
 		if err := s.startUnixListener(); err != nil {
 			return fmt.Errorf("failed to start UNIX listener: %w", err)
 		}
+	} else {
 		log.Printf("Skipping Unix socket listener (scope: %s, only TCP connections are allowed)", s.saslScope)
 	}
 
-	// Start TCP listener only if scope allows it
-	if s.tcpAddr != "" && (s.saslScope == conf.SASLScopeTCPOnly || s.saslScope == conf.SASLScopeAll) {
+	// Start the TCP listener if it is configured and allowed by the scope.
+	if s.tcpAddr == "" {
+		log.Println("Skipping TCP listener: no TCP address configured")
+	} else if s.saslScope == conf.SASLScopeTCPOnly || s.saslScope == conf.SASLScopeAll {
 		if err := s.startTCPListener(); err != nil {
 			return fmt.Errorf("failed to start TCP listener: %w", err)
 		}
+	} else {
 		log.Printf("Skipping TCP listener (scope: %s, only Unix socket connections are allowed)", s.saslScope)
 	}
 
