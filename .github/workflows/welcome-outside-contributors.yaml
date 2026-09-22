@@ -11,6 +11,12 @@ on:
             types:
                   - created
 
+# Serialize per thread: an opened event and a quick first comment can
+# otherwise both read the comment list before either posts the marker.
+concurrency:
+      group: welcome-outside-contributors-${{ github.event.issue.number || github.event.pull_request.number }}
+      cancel-in-progress: false
+
 permissions:
       contents: read
       issues: write
