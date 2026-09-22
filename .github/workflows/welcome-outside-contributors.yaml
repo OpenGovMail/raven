@@ -1,6 +1,12 @@
 name: Welcome Outside Contributors
 
 on:
+      issues:
+            types:
+                  - opened
+      pull_request_target:
+            types:
+                  - opened
       issue_comment:
             types:
                   - created
@@ -8,29 +14,52 @@ on:
 permissions:
       contents: read
       issues: write
+      pull-requests: write
 
 jobs:
       welcome:
-            if: >-
-                  ${{
-                    github.event.comment.user.type != 'Bot' &&
-                    contains(
-                      fromJson('["NONE","FIRST_TIMER","FIRST_TIME_CONTRIBUTOR","CONTRIBUTOR"]'),
-                      github.event.comment.author_association
-                    )
-                  }}
             runs-on: ubuntu-latest
             steps:
-                  - name: Welcome first-time outside commenters
+                  - name: Welcome first-time outside contributors
                     uses: actions/github-script@v7
                     with:
                           github-token: ${{ secrets.OPENGOVMAIL_BOT_TOKEN || github.token }}
                           script: |
-                                const issueNumber = context.payload.issue.number;
-                                const login = context.payload.comment.user.login;
+                                const payload = context.payload;
+                                // Greet whoever triggered us: the opener of an issue/PR, or a commenter.
+                                const subject = payload.comment || payload.pull_request || payload.issue;
+                                const issueNumber = (payload.issue || payload.pull_request).number;
+                                const user = subject.user;
+                                const login = user.login;
+
+                                // CLAassistant and friends post as plain User accounts, so the
+                                // account type alone is not enough to spot a service account.
+                                const SERVICE_ACCOUNTS = new Set([
+                                  "claassistant",
+                                  "codecov",
+                                  "dependabot",
+                                  "github-actions",
+                                  "greptile-apps",
+                                  "opengovmailbot",
+                                  "renovate",
+                                  "sonarcloud",
+                                ]);
+                                const normalized = login.toLowerCase().replace(/\[bot\]$/, "");
+
+                                if (user.type === "Bot" || login.endsWith("[bot]") || SERVICE_ACCOUNTS.has(normalized)) {
+                                  core.info(`Skipping welcome for service account ${login}.`);
+                                  return;
+                                }
+
+                                const OUTSIDE = ["NONE", "FIRST_TIMER", "FIRST_TIME_CONTRIBUTOR", "CONTRIBUTOR"];
+                                if (!OUTSIDE.includes(subject.author_association)) {
+                                  core.info(`Skipping welcome for ${login} (${subject.author_association}).`);
+                                  return;
+                                }
+
                                 const owner = context.repo.owner;
                                 const repo = context.repo.repo;
-                                const defaultBranch = context.payload.repository.default_branch;
+                                const defaultBranch = payload.repository.default_branch;
                                 const repoUrl = `https://github.com/${owner}/${repo}`;
                                 const marker = `<!-- outside-contributor-welcome:${login.toLowerCase()} -->`;
 
