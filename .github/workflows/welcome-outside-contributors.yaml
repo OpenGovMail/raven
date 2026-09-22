@@ -11,10 +11,19 @@ on:
             types:
                   - created
 
-# Serialize per thread: an opened event and a quick first comment can
-# otherwise both read the comment list before either posts the marker.
+# Serialize per thread and person: an opened event and a quick first comment
+# can otherwise both read the comment list before either posts the marker.
+# Keyed on the login as well as the number, because the marker is per-person
+# and Actions drops a queued run when a third joins the same group.
 concurrency:
-      group: welcome-outside-contributors-${{ github.event.issue.number || github.event.pull_request.number }}
+      group: >-
+            welcome-outside-contributors-${{
+              github.event.issue.number || github.event.pull_request.number
+            }}-${{
+              github.event.comment.user.login
+                || github.event.pull_request.user.login
+                || github.event.issue.user.login
+            }}
       cancel-in-progress: false
 
 permissions:
@@ -36,6 +45,11 @@ jobs:
                                 const subject = payload.comment || payload.pull_request || payload.issue;
                                 const issueNumber = (payload.issue || payload.pull_request).number;
                                 const user = subject.user;
+                                if (!user) {
+                                  // Deleted accounts come through as a null user.
+                                  core.info("Skipping welcome: no user on the event payload.");
+                                  return;
+                                }
                                 const login = user.login;
 
                                 // CLAassistant and friends post as plain User accounts, so the
@@ -88,8 +102,12 @@ jobs:
                                   return;
                                 }
 
+                                const greeting = payload.comment
+                                  ? `Hi @${login}, thanks for joining the conversation.`
+                                  : `Hi @${login}, thanks for opening this.`;
+
                                 const body = [
-                                  `Hi @${login}, thanks for joining the conversation. Our maintainers will be here soon to help you get started.`,
+                                  `${greeting} Our maintainers will be here soon to help you get started.`,
                                   ``,
                                   `Useful links, if you're new to the project:`,
                                   `- [Contributing guide](${repoUrl}/blob/${defaultBranch}/docs/CONTRIBUTING.md)`,
