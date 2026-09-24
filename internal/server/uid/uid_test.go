@@ -987,3 +987,34 @@ func TestUIDSearch_DefaultBehavior(t *testing.T) {
 		t.Errorf("Expected OK response, got: %s", response)
 	}
 }
+
+// TestUIDFetch_BodySectionOrdering tests that each BODY[section]'s literal
+// appears immediately after its own item name, not batched after all item
+// names (regression test for issue #298).
+func TestUIDFetch_BodySectionOrdering(t *testing.T) {
+	srv := server.SetupTestServerSimple(t)
+	conn := server.NewMockConn()
+	database := server.GetDatabaseFromServer(srv)
+
+	userID := server.CreateTestUser(t, database, "orderuser")
+	server.InsertTestMail(t, database, "orderuser", "Test Subject", "sender@test.com", "orderuser@localhost", "INBOX")
+	inboxID, _ := server.GetMailboxID(t, database, userID, "INBOX")
+
+	state := &models.ClientState{
+		Authenticated:     true,
+		UserID:            userID,
+		SelectedMailboxID: inboxID,
+	}
+
+	srv.HandleUID(conn, "A001", []string{"UID", "UID", "FETCH", "1", "(BODY.PEEK[1] BODY.PEEK[1.MIME])"}, state)
+	response := conn.GetWrittenData()
+
+	body := "Test message body" // InsertTestMail's fixed raw body text
+	wantOrder := fmt.Sprintf("BODY[1] {%d}\r\n%s BODY[1.MIME] {", len(body), body)
+	if !strings.Contains(response, wantOrder) {
+		t.Errorf("expected BODY[1]'s literal immediately after its own name, before BODY[1.MIME]; got: %s", response)
+	}
+	if strings.Contains(response, "BODY[1] BODY[1.MIME] {") {
+		t.Errorf("names batched before literals (old bug), got: %s", response)
+	}
+}
