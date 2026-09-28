@@ -8,11 +8,13 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
 
 	"raven/internal/idp"
+	"raven/internal/maildomain"
 )
 
 const (
@@ -224,7 +226,7 @@ func (gr *GroupResolver) resolveUserEmail(assertion, userID string) (string, err
 		return "", fmt.Errorf("unable to resolve domain for user %s: missing organization unit", userID)
 	}
 
-	domain, err := gr.resolveDomainFromOrganizationUnit(assertion, user.OrganizationUnit)
+	domain, err := gr.resolveOrganizationUnitDomain(assertion, user.OrganizationUnit)
 	if err != nil {
 		return "", fmt.Errorf("failed to resolve domain from org unit for user %s: %w", userID, err)
 	}
@@ -290,49 +292,22 @@ func (gr *GroupResolver) fetchUserByID(assertion, userID string) (*userRecord, e
 	}, nil
 }
 
-func (gr *GroupResolver) resolveDomainFromOrganizationUnit(assertion, orgUnitID string) (string, error) {
-	return gr.resolveOrganizationUnitDomain(assertion, orgUnitID)
-}
-
+// resolveOrganizationUnitDomain returns the mail domain of an OU, which is its handle. The OU's
+// parents play no part.
 func (gr *GroupResolver) resolveOrganizationUnitDomain(assertion, orgUnitID string) (string, error) {
-	type ouResponse struct {
-		ID     string  `json:"id"`
-		Handle string  `json:"handle"`
-		Parent *string `json:"parent"`
+	var ou struct {
+		Handle string `json:"handle"`
+	}
+	if err := gr.getJSON(gr.baseURL+"/organization-units/"+url.PathEscape(strings.TrimSpace(orgUnitID)), assertion, &ou); err != nil {
+		return "", err
 	}
 
-	handles := make([]string, 0, 4)
-	current := strings.TrimSpace(orgUnitID)
-	visited := map[string]struct{}{}
-
-	for current != "" {
-		if _, seen := visited[current]; seen {
-			return "", fmt.Errorf("cycle detected in OU hierarchy")
-		}
-		visited[current] = struct{}{}
-
-		var ou ouResponse
-		if err := gr.getJSON(gr.baseURL+"/organization-units/"+current, assertion, &ou); err != nil {
-			return "", err
-		}
-
-		handle := strings.TrimSpace(ou.Handle)
-		if handle != "" {
-			handles = append(handles, handle)
-		}
-
-		if ou.Parent == nil {
-			break
-		}
-
-		current = strings.TrimSpace(*ou.Parent)
+	domain, ok := maildomain.FromHandle(ou.Handle)
+	if !ok {
+		return "", fmt.Errorf("OU %s has handle %q, which is not a mail domain", orgUnitID, ou.Handle)
 	}
 
-	if len(handles) == 0 {
-		return "", fmt.Errorf("no OU handles found")
-	}
-
-	return strings.Join(handles, "."), nil
+	return domain, nil
 }
 
 func firstNonEmpty(values ...string) string {
