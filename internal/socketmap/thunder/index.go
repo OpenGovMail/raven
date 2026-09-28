@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"raven/internal/maildomain"
@@ -18,11 +19,18 @@ const orgUnitPageLimit = 100
 // The index maps each mail domain to the OU whose handle it is. Thunder can only find an OU
 // by its full handle path, and a domain says nothing about where its OU sits, so the whole
 // tree is read and kept for indexTTL.
+//
+// A walk makes one request per OU, which can outlast a caller's timeout, so lookups never
+// wait for a refresh: a stale index keeps answering while a new one is built in the
+// background. Only lookups that arrive before any index exists wait for a walk.
 var (
-	indexMu       sync.Mutex
+	indexMu       sync.RWMutex
 	indexTTL      = 5 * time.Minute
 	indexByDomain map[string]string
 	indexBuiltAt  time.Time
+
+	buildMu    sync.Mutex
+	refreshing atomic.Bool
 )
 
 // SetIndexTTL sets how long the domain index is used before it is rebuilt.
@@ -30,6 +38,11 @@ func SetIndexTTL(ttl time.Duration) {
 	indexMu.Lock()
 	defer indexMu.Unlock()
 	indexTTL = ttl
+}
+
+// WarmIndex builds the domain index so the first lookups don't wait for a tree walk.
+func WarmIndex(host, port string, tokenRefreshSeconds int) error {
+	return rebuildIndex(host, port, tokenRefreshSeconds, true)
 }
 
 // lookupOrgUnit returns the ID of the OU that owns domain. It fails only when no index could
@@ -40,26 +53,53 @@ func lookupOrgUnit(domain, host, port string, tokenRefreshSeconds int) (string, 
 		return "", false, nil
 	}
 
-	indexMu.Lock()
-	defer indexMu.Unlock()
-
-	if indexByDomain == nil || time.Since(indexBuiltAt) >= indexTTL {
-		index, err := buildIndex(host, port, tokenRefreshSeconds)
-		switch {
-		case err == nil:
-			indexByDomain = index
-		case indexByDomain == nil:
+	index, stale := currentIndex()
+	if index == nil {
+		if err := rebuildIndex(host, port, tokenRefreshSeconds, false); err != nil {
 			return "", false, err
-		default:
-			log.Printf("      │ ⚠ Domain index refresh failed, serving the previous one: %v", err)
 		}
-		// A failed refresh also waits a full TTL, so an outage doesn't put a tree walk
-		// behind every lookup.
-		indexBuiltAt = time.Now()
+		index, _ = currentIndex()
+	} else if stale && refreshing.CompareAndSwap(false, true) {
+		go func() {
+			defer refreshing.Store(false)
+			if err := rebuildIndex(host, port, tokenRefreshSeconds, true); err != nil {
+				log.Printf("      │ ⚠ Domain index refresh failed, serving the previous one: %v", err)
+			}
+		}()
 	}
 
-	ouID, found := indexByDomain[domain]
+	ouID, found := index[domain]
 	return ouID, found, nil
+}
+
+func currentIndex() (map[string]string, bool) {
+	indexMu.RLock()
+	defer indexMu.RUnlock()
+	return indexByDomain, time.Since(indexBuiltAt) >= indexTTL
+}
+
+// rebuildIndex walks the tree and swaps in the result. Without force it does nothing when an
+// index already exists, so lookups queued behind a first build don't each walk again.
+func rebuildIndex(host, port string, tokenRefreshSeconds int, force bool) error {
+	buildMu.Lock()
+	defer buildMu.Unlock()
+
+	if index, _ := currentIndex(); index != nil && !force {
+		return nil
+	}
+
+	index, err := buildIndex(host, port, tokenRefreshSeconds)
+
+	indexMu.Lock()
+	defer indexMu.Unlock()
+	if err == nil {
+		indexByDomain = index
+	}
+	// A failed refresh also waits a full TTL, so an outage doesn't start a walk on every
+	// lookup.
+	indexBuiltAt = time.Now()
+
+	return err
 }
 
 func buildIndex(host, port string, tokenRefreshSeconds int) (map[string]string, error) {

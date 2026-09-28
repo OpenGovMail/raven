@@ -75,6 +75,16 @@ func main() {
 	cacheManager := cache.New(cfg.CacheTTLSeconds)
 	thunder.SetIndexTTL(time.Duration(cfg.CacheTTLSeconds) * time.Second)
 
+	// Build the domain index before serving so the first lookups don't wait on a tree walk
+	log.Println("┌─ Domain Index ───────────────────")
+	if err := thunder.WarmIndex(cfg.ThunderHost, cfg.ThunderPort, cfg.TokenRefreshSeconds); err != nil {
+		log.Printf("│ ⚠ Initial domain index build failed: %v", err)
+		log.Printf("│ Check that raven's service account can list organization units")
+		log.Printf("│ Service will retry on first request")
+	}
+	log.Println("└───────────────────────────────────")
+	log.Println("")
+
 	// Display configuration
 	log.Printf("Starting socketmap service on %s:%s", cfg.Host, cfg.Port)
 	log.Printf("Configuration:")

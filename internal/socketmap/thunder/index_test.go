@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -24,12 +25,14 @@ type fakeThunder struct {
 	host, port string
 	fail       atomic.Bool
 	listCalls  atomic.Int32
+
+	mu       sync.Mutex
+	children map[string][]fakeOU
+	gate     chan struct{}
 }
 
-// newFakeThunder serves the OU listing endpoints for roots, paginated at pageSize.
-func newFakeThunder(t *testing.T, roots []fakeOU, pageSize int) *fakeThunder {
-	t.Helper()
-
+// setRoots replaces the tree the fake serves.
+func (ft *fakeThunder) setRoots(roots []fakeOU) {
 	children := map[string][]fakeOU{"": roots}
 	var index func([]fakeOU)
 	index = func(ous []fakeOU) {
@@ -40,8 +43,40 @@ func newFakeThunder(t *testing.T, roots []fakeOU, pageSize int) *fakeThunder {
 	}
 	index(roots)
 
+	ft.mu.Lock()
+	ft.children = children
+	ft.mu.Unlock()
+}
+
+// hold makes every request wait until the returned func is called.
+func (ft *fakeThunder) hold() (release func()) {
+	gate := make(chan struct{})
+	ft.mu.Lock()
+	ft.gate = gate
+	ft.mu.Unlock()
+
+	return func() {
+		ft.mu.Lock()
+		ft.gate = nil
+		ft.mu.Unlock()
+		close(gate)
+	}
+}
+
+// newFakeThunder serves the OU listing endpoints for roots, paginated at pageSize.
+func newFakeThunder(t *testing.T, roots []fakeOU, pageSize int) *fakeThunder {
+	t.Helper()
+
 	ft := &fakeThunder{}
+	ft.setRoots(roots)
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ft.mu.Lock()
+		gate, children := ft.gate, ft.children
+		ft.mu.Unlock()
+		if gate != nil {
+			<-gate
+		}
+
 		ft.listCalls.Add(1)
 		if ft.fail.Load() {
 			w.WriteHeader(http.StatusInternalServerError)
@@ -104,6 +139,7 @@ func resetIndex(t *testing.T) {
 	t.Helper()
 
 	reset := func() {
+		waitForRefresh(t)
 		indexMu.Lock()
 		indexByDomain, indexBuiltAt, indexTTL = nil, time.Time{}, 5*time.Minute
 		indexMu.Unlock()
@@ -112,6 +148,19 @@ func resetIndex(t *testing.T) {
 	reset()
 	SetAuth(&Auth{BearerToken: "test-token", ExpiresAt: time.Now().Add(time.Hour)})
 	t.Cleanup(reset)
+}
+
+// waitForRefresh waits for a background index refresh to finish.
+func waitForRefresh(t *testing.T) {
+	t.Helper()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for refreshing.Load() {
+		if time.Now().After(deadline) {
+			t.Fatal("background index refresh did not finish")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 }
 
 func (ft *fakeThunder) lookup(t *testing.T, domain string) (string, bool) {
@@ -208,8 +257,71 @@ func TestIndexServesPreviousIndexWhenRefreshFails(t *testing.T) {
 	SetIndexTTL(0)
 	ft.fail.Store(true)
 
+	ft.lookup(t, "one.lk")
+	waitForRefresh(t)
+
 	if id, found := ft.lookup(t, "one.lk"); !found || id != "ou-1" {
 		t.Errorf("lookup(one.lk) after failed refresh = (%q, %v), want (ou-1, true)", id, found)
+	}
+}
+
+func TestIndexRefreshDoesNotBlockLookups(t *testing.T) {
+	ft := newFakeThunder(t, []fakeOU{{id: "ou-1", handle: "one.lk"}}, 0)
+
+	ft.lookup(t, "one.lk")
+	SetIndexTTL(0)
+	release := ft.hold()
+	defer release()
+
+	start := time.Now()
+	for range 3 {
+		if id, found := ft.lookup(t, "one.lk"); !found || id != "ou-1" {
+			t.Fatalf("lookup(one.lk) during refresh = (%q, %v), want (ou-1, true)", id, found)
+		}
+	}
+	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
+		t.Fatalf("lookups took %v while a refresh was stalled, want them answered from the old index", elapsed)
+	}
+	if !refreshing.Load() {
+		t.Fatal("stale index did not start a background refresh")
+	}
+}
+
+func TestIndexRefreshPicksUpChanges(t *testing.T) {
+	ft := newFakeThunder(t, []fakeOU{{id: "ou-1", handle: "one.lk"}}, 0)
+
+	ft.lookup(t, "one.lk")
+	ft.setRoots([]fakeOU{{id: "ou-1", handle: "one.lk"}, {id: "ou-2", handle: "two.lk"}})
+	SetIndexTTL(0)
+
+	// The stale lookup starts the refresh; later lookups see its result.
+	ft.lookup(t, "two.lk")
+	waitForRefresh(t)
+	SetIndexTTL(time.Hour)
+
+	if id, found := ft.lookup(t, "two.lk"); !found || id != "ou-2" {
+		t.Errorf("lookup(two.lk) after refresh = (%q, %v), want (ou-2, true)", id, found)
+	}
+}
+
+func TestWarmIndex(t *testing.T) {
+	ft := newFakeThunder(t, []fakeOU{{id: "ou-1", handle: "one.lk"}}, 0)
+
+	if err := WarmIndex(ft.host, ft.port, 300); err != nil {
+		t.Fatalf("WarmIndex() error: %v", err)
+	}
+	calls := ft.listCalls.Load()
+
+	if id, found := ft.lookup(t, "one.lk"); !found || id != "ou-1" {
+		t.Errorf("lookup(one.lk) = (%q, %v), want (ou-1, true)", id, found)
+	}
+	if got := ft.listCalls.Load(); got != calls {
+		t.Errorf("lookup after WarmIndex called Thunder %d times, want 0", got-calls)
+	}
+
+	ft.fail.Store(true)
+	if err := WarmIndex(ft.host, ft.port, 300); err == nil {
+		t.Error("WarmIndex() error = nil, want an error when Thunder fails")
 	}
 }
 
