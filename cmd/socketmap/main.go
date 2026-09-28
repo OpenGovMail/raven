@@ -73,6 +73,7 @@ func main() {
 
 	// Initialize cache
 	cacheManager := cache.New(cfg.CacheTTLSeconds)
+	thunder.SetIndexTTL(time.Duration(cfg.CacheTTLSeconds) * time.Second)
 
 	// Display configuration
 	log.Printf("Starting socketmap service on %s:%s", cfg.Host, cfg.Port)

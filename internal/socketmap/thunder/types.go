@@ -20,6 +20,21 @@ type OrgUnitResponse struct {
 	Parent      *string `json:"parent"`
 }
 
+// OrgUnitsResponse is one page of an organization unit listing.
+type OrgUnitsResponse struct {
+	TotalResults      int               `json:"totalResults"`
+	StartIndex        int               `json:"startIndex"`
+	Count             int               `json:"count"`
+	OrganizationUnits []OrgUnitResponse `json:"organizationUnits"`
+	Links             []Link            `json:"links"`
+}
+
+// Link is a pagination link in a Thunder listing.
+type Link struct {
+	Href string `json:"href"`
+	Rel  string `json:"rel"`
+}
+
 // UsersResponse represents the response from Thunder Users API
 type UsersResponse struct {
 	TotalResults int           `json:"totalResults"`
