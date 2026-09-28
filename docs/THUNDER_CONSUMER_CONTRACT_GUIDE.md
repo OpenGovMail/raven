@@ -29,7 +29,9 @@ Out of scope:
 
 - Authenticates with Thunder via flow API.
 - Validates domain, user, and group-address existence.
-- Uses OU tree lookup for domain to OU ID mapping.
+- Reads the whole OU tree to map each mail domain (an OU handle) to its OU ID, and
+  rebuilds that map on a timer every `CACHE_TTL_SECONDS`. Lookups only read the map, so
+  an OU that is added, renamed or removed shows up after the next rebuild.
 
 ### 2) LMTP delivery group resolver flow
 
@@ -43,19 +45,36 @@ Out of scope:
 - Raven depends on the resulting access token behavior and key-discovery behavior.
 - These are client-facing dependencies and must be included in the consumer contract.
 
+## Mail Domain Handles
+
+An OU's handle is its mail domain, so a handle that is a domain must belong to exactly one
+OU in the whole tree. Raven does not rely on Thunder to enforce this, so it is left to
+whoever administers the tree.
+
+If two OUs share a domain handle:
+
+- Socketmap refuses the domain and logs a warning that names both OUs. Postfix then
+  rejects mail for it.
+- IMAP login and group expansion read one OU at a time and do not see the clash. Users
+  with the same username in the two OUs resolve to the same address, and so to the same
+  mailbox.
+
+Rename one of the OUs to fix it. Socketmap picks up the change at its next rebuild, and
+its lookup cache can keep an earlier answer for one more `CACHE_TTL_SECONDS`.
+
 ## API Summary
 
 | # | Method | Endpoint | Used for |
 |---|---|---|---|
 | 1 | POST | /flow/execute | Start auth flow |
 | 2 | POST | /flow/execute | Complete auth flow |
-| 3 | GET | /organization-units/tree/{ouPath} | Domain lookup and OU ID resolution |
+| 3 | GET | /organization-units, /organization-units/{id}/ous | Map mail domains to OU IDs |
 | 4 | GET | /users?filter=... | User existence validation |
 | 5 | GET | /groups?filter=... | Group-address validation |
 | 6 | GET | /groups | Group name to group ID lookup |
 | 7 | GET | /groups/{groupId}/members | Group member resolution |
 | 8 | GET | /users/{userId} | Resolve member user profile |
-| 9 | GET | /organization-units/{id} | Resolve OU hierarchy to domain |
+| 9 | GET | /organization-units/{id} | Read an OU's mail domain (its handle) |
 | 10 | GET | /oauth2/authorize | Thunderbird authorization redirect/login |
 | 11 | POST | /oauth2/token | Thunderbird code-to-token exchange and refresh |
 | 12 | GET | /oauth2/jwks | Public key discovery for token verification |
@@ -122,29 +141,38 @@ Contract rules:
 - assertion must be a JWT with 3 segments.
 - JWT must include exp claim (Raven uses it for cache expiry).
 
-### 3) Get Organization Unit by Domain Path
+### 3) List Organization Units
 
 Method: GET  
-Path: /organization-units/tree/{ouPath}  
+Path: /organization-units?limit=100 (roots), /organization-units/{id}/ous?limit=100 (children)  
 Used by: socketmap domain check and OU ID lookup
+
+Raven walks the whole tree, including OUs whose handle is not a domain, and maps each
+handle that is a domain to its OU ID. A domain that is the handle of more than one OU is
+left out of the map.
 
 Required headers:
 
 | Header | Required | Notes |
 |---|---|---|
-| Authorization: Bearer <assertion> | Yes | Access token from flow |
+| Authorization: Bearer <assertion> | Yes | System token |
 
 Response fields:
 
 | Field | Required | Notes |
 |---|---|---|
-| id | Yes | OU ID used for user/group matching |
-| name | No | Logging only |
+| organizationUnits[].id | Yes | OU ID used for user/group matching |
+| organizationUnits[].handle | Yes | The OU's mail domain, when it is one |
+| links[] | Yes | Raven follows `rel: "next"` until it is absent |
 
 Expected statuses:
 
-- 200: domain found
-- 404: domain not found (valid negative)
+- 200: page returned. An OU with no children returns 200 with an empty list.
+
+Contract rules:
+
+- `limit` must accept 100 (Thunder rejects anything larger).
+- `links[].href` is a path relative to the Thunder base URL.
 
 ### 4) Find Users by Username Filter
 
@@ -281,28 +309,27 @@ Expected status: 200
 
 Method: GET  
 Path: /organization-units/{id}  
-Used by: delivery group resolver (domain derivation)
+Used by: IMAP login domain check and delivery group resolver
 
 Required headers:
 
 | Header | Required | Notes |
 |---|---|---|
-| Authorization: Bearer <assertion> | Yes | Access token from flow |
+| Authorization: Bearer <assertion> | Yes | System token |
 
 Response fields:
 
 | Field | Required | Notes |
 |---|---|---|
-| id | Yes | Node identity |
-| handle | Yes | Used to build domain |
-| parent | No | Traversal stops when null |
+| handle | Yes | The OU's mail domain |
 
 Expected status: 200
 
 Contract rules:
 
-- OU hierarchy must be acyclic.
-- Domain is built by joining OU handles with a dot from leaf to root.
+- The handle is the whole mail domain, of any depth. Parents are not fetched.
+- A handle that is not a domain (fewer than two labels, or characters outside
+  `a-z 0-9 - _`) means the OU has no mail domain.
 
 ### 10) OAuth2 Authorize (Thunderbird)
 
