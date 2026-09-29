@@ -304,6 +304,44 @@ func TestIndexRefreshPicksUpChanges(t *testing.T) {
 	}
 }
 
+func TestLookupDuringWarmIndexSharesTheBuild(t *testing.T) {
+	ft := newFakeThunder(t, []fakeOU{{id: "ou-1", handle: "one.lk"}}, 0)
+	release := ft.hold()
+
+	warmed := make(chan error, 1)
+	go func() { warmed <- WarmIndex(ft.host, ft.port, 300) }()
+
+	// Wait until the warm build holds buildMu, so the lookup below queues behind it.
+	for buildMu.TryLock() {
+		buildMu.Unlock()
+		time.Sleep(time.Millisecond)
+	}
+
+	type result struct {
+		id    string
+		found bool
+		err   error
+	}
+	looked := make(chan result, 1)
+	go func() {
+		id, found, err := lookupOrgUnit("one.lk", ft.host, ft.port, 300)
+		looked <- result{id, found, err}
+	}()
+
+	release()
+	if err := <-warmed; err != nil {
+		t.Fatalf("WarmIndex() error: %v", err)
+	}
+	if r := <-looked; r.err != nil || !r.found || r.id != "ou-1" {
+		t.Fatalf("lookupOrgUnit(one.lk) = (%q, %v, %v), want (ou-1, true, nil)", r.id, r.found, r.err)
+	}
+
+	// One walk of this tree is two requests: the roots and ou-1's children.
+	if got := ft.listCalls.Load(); got != 2 {
+		t.Errorf("Thunder called %d times, want 2 (one walk)", got)
+	}
+}
+
 func TestWarmIndex(t *testing.T) {
 	ft := newFakeThunder(t, []fakeOU{{id: "ou-1", handle: "one.lk"}}, 0)
 
