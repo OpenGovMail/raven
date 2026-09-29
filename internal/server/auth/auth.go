@@ -18,6 +18,7 @@ import (
 	"raven/internal/blobstorage"
 	"raven/internal/conf"
 	"raven/internal/idp"
+	"raven/internal/maildomain"
 	"raven/internal/models"
 )
 
@@ -681,44 +682,22 @@ func fetchSystemAssertion(baseURL string) string {
 	return token
 }
 
+// resolveOrganizationUnitDomain returns the mail domain of an OU, which is its handle. The OU's
+// parents play no part.
 func resolveOrganizationUnitDomain(baseURL, orgUnitID, assertion string) (string, error) {
-	type ouResponse struct {
-		ID     string  `json:"id"`
-		Handle string  `json:"handle"`
-		Parent *string `json:"parent"`
+	var ou struct {
+		Handle string `json:"handle"`
+	}
+	if err := getJSON(baseURL+"/organization-units/"+url.PathEscape(strings.TrimSpace(orgUnitID)), assertion, &ou); err != nil {
+		return "", err
 	}
 
-	handles := make([]string, 0, 4)
-	current := strings.TrimSpace(orgUnitID)
-	visited := map[string]struct{}{}
-
-	for current != "" {
-		if _, seen := visited[current]; seen {
-			return "", fmt.Errorf("cycle detected in OU hierarchy")
-		}
-		visited[current] = struct{}{}
-
-		var ou ouResponse
-		if err := getJSON(baseURL+"/organization-units/"+current, assertion, &ou); err != nil {
-			return "", err
-		}
-
-		handle := strings.TrimSpace(ou.Handle)
-		if handle != "" {
-			handles = append(handles, handle)
-		}
-
-		if ou.Parent == nil {
-			break
-		}
-		current = strings.TrimSpace(*ou.Parent)
+	domain, ok := maildomain.FromHandle(ou.Handle)
+	if !ok {
+		return "", fmt.Errorf("OU %s has handle %q, which is not a mail domain", orgUnitID, ou.Handle)
 	}
 
-	if len(handles) == 0 {
-		return "", fmt.Errorf("no OU handles found")
-	}
-
-	return strings.Join(handles, "."), nil
+	return domain, nil
 }
 
 func postJSON(endpoint string, payload any, assertion string, out any) error {

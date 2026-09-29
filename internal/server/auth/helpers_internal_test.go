@@ -135,45 +135,49 @@ func TestFetchSystemAssertion(t *testing.T) {
 	})
 }
 
-func TestResolveOrganizationUnitDomainAndCycle(t *testing.T) {
-	t.Run("hierarchy builds subdomain", func(t *testing.T) {
-		srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.Header.Get("Authorization") != "Bearer token" {
-				w.WriteHeader(http.StatusUnauthorized)
-				return
-			}
+func TestResolveOrganizationUnitDomain(t *testing.T) {
+	// The child's handle is unrelated to its parent's, and the parent is not a mail domain.
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer token" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
 
-			w.Header().Set("Content-Type", "application/json")
-			switch r.URL.Path {
-			case "/organization-units/ou-child":
-				_, _ = w.Write([]byte(`{"id":"ou-child","handle":"opengovmail","parent":"ou-root"}`))
-			case "/organization-units/ou-root":
-				_, _ = w.Write([]byte(`{"id":"ou-root","handle":"example.com","parent":null}`))
-			default:
-				w.WriteHeader(http.StatusNotFound)
-			}
-		}))
-		defer srv.Close()
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/organization-units/ou-child":
+			_, _ = w.Write([]byte(`{"id":"ou-child","handle":"Silver.LSF.lk","parent":"ou-root"}`))
+		case "/organization-units/ou-root":
+			t.Errorf("parent OU fetched; an OU's domain must not depend on its parents")
+			_, _ = w.Write([]byte(`{"id":"ou-root","handle":"foundations","parent":null}`))
+		case "/organization-units/ou-grouping":
+			_, _ = w.Write([]byte(`{"id":"ou-grouping","handle":"foundations","parent":null}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
 
+	t.Run("handle is the domain", func(t *testing.T) {
 		domain, err := resolveOrganizationUnitDomain(srv.URL, "ou-child", "token")
 		if err != nil {
 			t.Fatalf("resolveOrganizationUnitDomain() unexpected error: %v", err)
 		}
-		if domain != "opengovmail.example.com" {
-			t.Fatalf("domain = %q, want %q", domain, "opengovmail.example.com")
+		if domain != "silver.lsf.lk" {
+			t.Fatalf("domain = %q, want %q", domain, "silver.lsf.lk")
 		}
 	})
 
-	t.Run("cycle detected", func(t *testing.T) {
-		srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"id":"ou-a","handle":"a","parent":"ou-a"}`))
-		}))
-		defer srv.Close()
+	t.Run("handle that is not a domain", func(t *testing.T) {
+		_, err := resolveOrganizationUnitDomain(srv.URL, "ou-grouping", "token")
+		if err == nil || !strings.Contains(err.Error(), "not a mail domain") {
+			t.Fatalf("expected not a mail domain error, got: %v", err)
+		}
+	})
 
-		_, err := resolveOrganizationUnitDomain(srv.URL, "ou-a", "")
-		if err == nil || !strings.Contains(err.Error(), "cycle detected") {
-			t.Fatalf("expected cycle detected error, got: %v", err)
+	t.Run("unknown OU", func(t *testing.T) {
+		if _, err := resolveOrganizationUnitDomain(srv.URL, "ou-missing", "token"); err == nil {
+			t.Fatal("expected an error for an unknown OU")
 		}
 	})
 }
@@ -267,14 +271,7 @@ func TestResolveDomainFromOrganizationUnit_AdditionalBranches(t *testing.T) {
 				return
 			}
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"id":"ou-child","handle":"opengovmail","parent":"ou-root"}`))
-		case "/organization-units/ou-root":
-			if r.Header.Get("Authorization") != "Bearer system-token" {
-				w.WriteHeader(http.StatusUnauthorized)
-				return
-			}
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"id":"ou-root","handle":"example.com","parent":null}`))
+			_, _ = w.Write([]byte(`{"id":"ou-child","handle":"opengovmail.example.com","parent":"ou-root"}`))
 		default:
 			w.WriteHeader(http.StatusNotFound)
 			_, _ = fmt.Fprintf(w, "not found: %s", r.URL.Path)

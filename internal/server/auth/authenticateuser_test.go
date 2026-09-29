@@ -272,9 +272,9 @@ func TestAuthenticateUser_SubdomainEmailFromIDP(t *testing.T) {
 	}
 }
 
-// TestAuthenticateUser_SubdomainEmailFromOrgUnitHierarchy verifies domain construction
+// TestAuthenticateUser_SubdomainEmailFromOrgUnitHandle verifies domain construction
 // from organization-unit handles when auth response doesn't include an email id.
-func TestAuthenticateUser_SubdomainEmailFromOrgUnitHierarchy(t *testing.T) {
+func TestAuthenticateUser_SubdomainEmailFromOrgUnitHandle(t *testing.T) {
 	tokenCalls := 0
 	t.Setenv("IDP_CLIENT_ID", "RAVEN_SYSTEM")
 	t.Setenv("IDP_CLIENT_SECRET", "svc-secret")
@@ -299,15 +299,7 @@ func TestAuthenticateUser_SubdomainEmailFromOrgUnitHierarchy(t *testing.T) {
 			}
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte(`{"id":"019cf0a5-4109-79ac-857b-07fc7b5c19ac","handle":"opengovmail","parent":"019cf0a3-c234-7190-a4c9-d5f6860a44e9"}`))
-		case "/organization-units/019cf0a3-c234-7190-a4c9-d5f6860a44e9":
-			if r.Header.Get("Authorization") != "Bearer test-assertion" {
-				w.WriteHeader(http.StatusUnauthorized)
-				return
-			}
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte(`{"id":"019cf0a3-c234-7190-a4c9-d5f6860a44e9","handle":"example.com","parent":null}`))
+			_, _ = w.Write([]byte(`{"id":"019cf0a5-4109-79ac-857b-07fc7b5c19ac","handle":"opengovmail.example.com","parent":"019cf0a3-c234-7190-a4c9-d5f6860a44e9"}`))
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
@@ -377,15 +369,7 @@ func TestAuthenticateUser_UsernameWithDomainMismatchFromOrgUnit(t *testing.T) {
 			}
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte(`{"id":"019cf0a5-4109-79ac-857b-07fc7b5c19ac","handle":"opengovmail","parent":"019cf0a3-c234-7190-a4c9-d5f6860a44e9"}`))
-		case "/organization-units/019cf0a3-c234-7190-a4c9-d5f6860a44e9":
-			if r.Header.Get("Authorization") != "Bearer test-assertion" {
-				w.WriteHeader(http.StatusUnauthorized)
-				return
-			}
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte(`{"id":"019cf0a3-c234-7190-a4c9-d5f6860a44e9","handle":"example.com","parent":null}`))
+			_, _ = w.Write([]byte(`{"id":"019cf0a5-4109-79ac-857b-07fc7b5c19ac","handle":"opengovmail.example.com","parent":"019cf0a3-c234-7190-a4c9-d5f6860a44e9"}`))
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
@@ -442,15 +426,7 @@ func TestAuthenticateUser_UsernameWithDomainMatchesOrgUnit(t *testing.T) {
 			}
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte(`{"id":"019cf0a5-4109-79ac-857b-07fc7b5c19ac","handle":"opengovmail","parent":"019cf0a3-c234-7190-a4c9-d5f6860a44e9"}`))
-		case "/organization-units/019cf0a3-c234-7190-a4c9-d5f6860a44e9":
-			if r.Header.Get("Authorization") != "Bearer test-assertion" {
-				w.WriteHeader(http.StatusUnauthorized)
-				return
-			}
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte(`{"id":"019cf0a3-c234-7190-a4c9-d5f6860a44e9","handle":"example.com","parent":null}`))
+			_, _ = w.Write([]byte(`{"id":"019cf0a5-4109-79ac-857b-07fc7b5c19ac","handle":"opengovmail.example.com","parent":"019cf0a3-c234-7190-a4c9-d5f6860a44e9"}`))
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
