@@ -101,13 +101,6 @@ func SystemToken(baseURL string) (string, time.Time, error) {
 	return token, time.Now().Add(lifetime), nil
 }
 
-// DirectAuthSecret returns the shared secret that Thunder's Direct API requires, or an empty
-// string when none is configured. Thunder rejects those endpoints with 401 when the secret is
-// missing or wrong.
-func DirectAuthSecret() string {
-	return strings.TrimSpace(os.Getenv("IDP_DIRECT_AUTH_SECRET"))
-}
-
 // resourceIdentifier names the resource server the token is requested for. Thunder derives the
 // identifier from its own public URL, which is not necessarily the address raven reaches it on —
 // in Kubernetes raven talks to a Service name while the identifier uses the public hostname — so

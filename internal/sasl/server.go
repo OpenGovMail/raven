@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -474,19 +475,7 @@ func (s *Server) handlePlain(conn net.Conn, id, resp string, respProvided bool, 
 	log.Printf("PLAIN authentication attempt for user: %s", username)
 
 	// Authenticate via external API
-	if s.authenticate(username, password) {
-		// Success
-		response := fmt.Sprintf("OK\t%s\tuser=%s\n", id, username)
-		_, _ = conn.Write([]byte(response))
-		log.Printf("SASL sent: %s", strings.TrimSpace(response))
-		log.Printf("Authentication successful for user: %s", username)
-	} else {
-		// Failure
-		response := fmt.Sprintf("FAIL\t%s\tuser=%s\treason=Invalid credentials\n", id, username)
-		_, _ = conn.Write([]byte(response))
-		log.Printf("SASL sent: %s", strings.TrimSpace(response))
-		log.Printf("Authentication failed for user: %s", username)
-	}
+	s.respondToPasswordAuth(conn, id, username, s.authenticate(username, password))
 }
 
 // handleLogin handles LOGIN authentication mechanism
@@ -675,8 +664,38 @@ func normalizeOAuthIdentity(identity, defaultDomain string) string {
 	return identity + "@" + strings.Trim(strings.TrimSpace(defaultDomain), ".")
 }
 
+// authResult is the outcome of checking a password against the auth API.
+type authResult int
+
+const (
+	authAccepted authResult = iota
+	authRejected
+	// authUnavailable means the credentials could not be checked at all, e.g. the auth API was
+	// unreachable or refused raven's own request. It must not be reported as a wrong password.
+	authUnavailable
+)
+
+// respondToPasswordAuth sends the SASL reply for a PLAIN or LOGIN password check.
+func (s *Server) respondToPasswordAuth(conn net.Conn, id, username string, result authResult) {
+	var response string
+	switch result {
+	case authAccepted:
+		response = fmt.Sprintf("OK\t%s\tuser=%s\n", id, username)
+		log.Printf("Authentication successful for user: %s", username)
+	case authUnavailable:
+		// "temp" marks the failure as temporary; Postfix answers 454 instead of 535.
+		response = fmt.Sprintf("FAIL\t%s\tuser=%s\ttemp\treason=Authentication service unavailable\n", id, username)
+		log.Printf("Authentication could not be completed for user: %s", username)
+	default:
+		response = fmt.Sprintf("FAIL\t%s\tuser=%s\treason=Invalid credentials\n", id, username)
+		log.Printf("Authentication failed for user: %s", username)
+	}
+	_, _ = conn.Write([]byte(response))
+	log.Printf("SASL sent: %s", strings.TrimSpace(response))
+}
+
 // authenticate validates credentials against external API
-func (s *Server) authenticate(username, password string) bool {
+func (s *Server) authenticate(username, password string) authResult {
 	// Keep behavior consistent with IMAP auth: send the identifier as local username.
 	authUsername := username
 	if at := strings.Index(authUsername, "@"); at > 0 {
@@ -696,14 +715,14 @@ func (s *Server) authenticate(username, password string) bool {
 	requestBodyBytes, err := json.Marshal(requestPayload)
 	if err != nil {
 		log.Printf("Failed to marshal authentication request payload: %v", err)
-		return false
+		return authUnavailable
 	}
 
 	// Create HTTP request
 	req, err := http.NewRequest("POST", s.authURL, strings.NewReader(string(requestBodyBytes)))
 	if err != nil {
 		log.Printf("Failed to create HTTP request: %v", err)
-		return false
+		return authUnavailable
 	}
 	req.Header.Set("Content-Type", "application/json")
 	// Thunder's Direct API is gated by a shared secret; without it the endpoint answers 401.
@@ -726,19 +745,29 @@ func (s *Server) authenticate(username, password string) bool {
 	resp, err := client.Do(req)
 	if err != nil {
 		log.Printf("Authentication API request failed: %v", err)
-		return false
+		return authUnavailable
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	// Check response status
 	if resp.StatusCode == 200 {
 		log.Printf("Authentication API returned success for user: %s", authUsername)
-		return true
+		return authAccepted
+	}
+
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	if idp.IsDirectAuthRejection(resp.StatusCode, body) {
+		log.Printf("Authentication API refused raven's request (401 AUTH-4010) for user: %s; check IDP_DIRECT_AUTH_SECRET", authUsername)
+		return authUnavailable
+	}
+	if resp.StatusCode >= 500 {
+		log.Printf("Authentication API returned status %d for user: %s", resp.StatusCode, authUsername)
+		return authUnavailable
 	}
 
 	// #nosec G706 -- authUsername is sanitized by caller, status code is int
 	log.Printf("Authentication API returned status %d for user: %s", resp.StatusCode, authUsername)
-	return false
+	return authRejected
 }
 
 // handleCont handles continuation requests
@@ -820,17 +849,7 @@ func (s *Server) handleLoginCont(conn net.Conn, id, resp string, state *authStat
 
 		log.Printf("LOGIN authentication attempt for user: %s", state.Username)
 
-		if s.authenticate(state.Username, password) {
-			response := fmt.Sprintf("OK\t%s\tuser=%s\n", id, state.Username)
-			_, _ = conn.Write([]byte(response))
-			log.Printf("SASL sent: %s", strings.TrimSpace(response))
-			log.Printf("Authentication successful for user: %s", state.Username)
-		} else {
-			response := fmt.Sprintf("FAIL\t%s\tuser=%s\treason=Invalid credentials\n", id, state.Username)
-			_, _ = conn.Write([]byte(response))
-			log.Printf("SASL sent: %s", strings.TrimSpace(response))
-			log.Printf("Authentication failed for user: %s", state.Username)
-		}
+		s.respondToPasswordAuth(conn, id, state.Username, s.authenticate(state.Username, password))
 	default:
 		delete(authStates, id)
 		response := fmt.Sprintf("FAIL\t%s\treason=Invalid state\n", id)

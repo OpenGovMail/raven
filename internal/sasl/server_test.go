@@ -388,6 +388,103 @@ func TestPlainAuthenticationFailure(t *testing.T) {
 	}
 }
 
+// plainAuthResponse runs one PLAIN authentication against a SASL server backed by handler and
+// returns the server's reply line.
+func plainAuthResponse(t *testing.T, handler http.HandlerFunc) string {
+	t.Helper()
+	socketPath := getSocketPath(t)
+
+	authServer := httptest.NewServer(handler)
+	defer authServer.Close()
+
+	server := sasl.NewServer(socketPath, "", authServer.URL, "example.com", conf.SASLScopeAll)
+	go func() { _ = server.Start() }()
+	defer func() { _ = server.Shutdown() }()
+	time.Sleep(100 * time.Millisecond)
+
+	conn, err := net.Dial("unix", socketPath)
+	if err != nil {
+		t.Fatalf("Failed to connect to socket: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	encodedCreds := base64.StdEncoding.EncodeToString([]byte("\x00user@example.com\x00secret"))
+	_, _ = fmt.Fprintf(conn, "AUTH\t1\tPLAIN\tservice=smtp\tresp=%s\n", encodedCreds)
+
+	response, err := bufio.NewReader(conn).ReadString('\n')
+	if err != nil {
+		t.Fatalf("Failed to read response: %v", err)
+	}
+	return response
+}
+
+// TestPlainAuthenticationSendsDirectAuthSecret tests that the configured secret reaches the auth API
+func TestPlainAuthenticationSendsDirectAuthSecret(t *testing.T) {
+	t.Setenv("IDP_DIRECT_AUTH_SECRET", "s3cret")
+
+	var gotSecret string
+	response := plainAuthResponse(t, func(w http.ResponseWriter, r *http.Request) {
+		gotSecret = r.Header.Get("Direct-Auth-Secret")
+		w.WriteHeader(http.StatusOK)
+	})
+
+	if !strings.HasPrefix(response, "OK\t1\t") {
+		t.Errorf("Expected OK response, got: %s", response)
+	}
+	if gotSecret != "s3cret" {
+		t.Errorf("Expected Direct-Auth-Secret %q, got %q", "s3cret", gotSecret)
+	}
+}
+
+// TestPlainAuthenticationDirectAuthRejected tests that a missing Direct-Auth-Secret is reported
+// as a temporary failure rather than as invalid credentials
+func TestPlainAuthenticationDirectAuthRejected(t *testing.T) {
+	t.Setenv("IDP_DIRECT_AUTH_SECRET", "")
+
+	response := plainAuthResponse(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"code":"AUTH-4010","message":"Authentication is required"}`))
+	})
+
+	if !strings.HasPrefix(response, "FAIL\t1\t") {
+		t.Fatalf("Expected FAIL response, got: %s", response)
+	}
+	if !strings.Contains(response, "\ttemp\t") {
+		t.Errorf("Expected temporary failure flag, got: %s", response)
+	}
+	if strings.Contains(response, "Invalid credentials") {
+		t.Errorf("Expected no 'Invalid credentials' reason, got: %s", response)
+	}
+}
+
+// TestPlainAuthenticationServerErrorIsTemporary tests that an auth API outage is a temporary failure
+func TestPlainAuthenticationServerErrorIsTemporary(t *testing.T) {
+	response := plainAuthResponse(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	})
+
+	if !strings.HasPrefix(response, "FAIL\t1\t") || !strings.Contains(response, "\ttemp\t") {
+		t.Errorf("Expected temporary FAIL response, got: %s", response)
+	}
+}
+
+// TestPlainAuthenticationWrongPasswordIsNotTemporary tests that a credential rejection stays permanent
+func TestPlainAuthenticationWrongPasswordIsNotTemporary(t *testing.T) {
+	response := plainAuthResponse(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"code":"AUTHN-1001","message":"Invalid credentials"}`))
+	})
+
+	if !strings.Contains(response, "reason=Invalid credentials") {
+		t.Errorf("Expected 'Invalid credentials' reason, got: %s", response)
+	}
+	if strings.Contains(response, "\ttemp") {
+		t.Errorf("Expected permanent failure, got: %s", response)
+	}
+}
+
 // TestPlainAuthenticationWithAuthzid tests PLAIN authentication with authorization identity
 func TestPlainAuthenticationWithAuthzid(t *testing.T) {
 	socketPath := getSocketPath(t)

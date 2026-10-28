@@ -132,6 +132,32 @@ You can see an [example raven.yaml](../config/raven.yaml) for your reference. Up
 The delivery service requires a separate configuration file named `delivery.yaml` and should reside inside the `/etc/raven` folder of the Docker container.
 You can see the [example delivery.yaml](../config/delivery.yaml) for reference. Update the `delivery.yaml` file according to your config.
 
+### 🔑 Identity Provider Environment Variables
+
+Raven reads its Thunder (ThunderID) credentials from environment variables rather than from `raven.yaml`.
+
+| Variable                      | Used by                     | Description                                                                                                                                         |
+|-------------------------------|-----------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------|
+| `IDP_DIRECT_AUTH_SECRET`      | IMAP, SASL                  | Shared secret sent as the `Direct-Auth-Secret` header when checking a user's password. Must match Thunder's `config/secrets/direct_auth_secret`. |
+| `IDP_DIRECT_AUTH_SECRET_FILE` | IMAP, SASL                  | Path to a file containing that secret, e.g. a mounted Kubernetes Secret. Used when `IDP_DIRECT_AUTH_SECRET` is not set.                          |
+| `IDP_CLIENT_ID`               | Delivery, socketmap         | Client ID of raven's service account, used to read organization units, users and groups.                                                         |
+| `IDP_CLIENT_SECRET`           | Delivery, socketmap         | Client secret of raven's service account.                                                                                                        |
+| `IDP_RESOURCE`                | Delivery, socketmap         | Optional. Resource identifier for the service-account token. Defaults to `<auth server base URL>/mcp`.                                           |
+
+Thunder 1.0.0 and later reject password checks that lack the direct-auth secret with `401 AUTH-4010`, before looking at the password.
+If neither `IDP_DIRECT_AUTH_SECRET` nor `IDP_DIRECT_AUTH_SECRET_FILE` is set, the IMAP and SASL services log a warning at startup, and logins fail with a
+temporary error (IMAP `NO [UNAVAILABLE]`, SMTP `454`) rather than "invalid credentials".
+
+```bash
+docker run -d --rm \
+  --name raven \
+  -e IDP_DIRECT_AUTH_SECRET=<secret> \
+  -e IDP_CLIENT_ID=<client id> \
+  -e IDP_CLIENT_SECRET=<client secret> \
+  ...
+  ghcr.io/opengovmail/raven:latest
+```
+
 ## Contributing
 
 Thank you for wanting to contribute to our project. Please see [CONTRIBUTING.md](https://github.com/OpenGovMail/raven/blob/main/docs/CONTRIBUTING.md) for more details.

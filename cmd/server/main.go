@@ -8,6 +8,7 @@ import (
 	"raven/internal/blobstorage"
 	"raven/internal/conf"
 	"raven/internal/db"
+	"raven/internal/idp"
 	"raven/internal/server"
 )
 
@@ -54,6 +55,8 @@ func main() {
 	} else {
 		log.Println("S3 blob storage is disabled in config, using local SQLite storage")
 	}
+
+	idp.WarnIfDirectAuthSecretMissing()
 
 	// Create IMAP server with S3 storage support
 	imapServer := server.NewIMAPServerWithS3(dbManager, s3Storage)

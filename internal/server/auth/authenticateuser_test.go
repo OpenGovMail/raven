@@ -141,6 +141,61 @@ func TestAuthenticateUser_MissingDomain(t *testing.T) {
 	}
 }
 
+// TestAuthenticateUser_SendsDirectAuthSecret tests that the configured secret reaches the auth API
+func TestAuthenticateUser_SendsDirectAuthSecret(t *testing.T) {
+	t.Setenv("IDP_DIRECT_AUTH_SECRET", "s3cret")
+
+	var gotSecret string
+	authServer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotSecret = r.Header.Get("Direct-Auth-Secret")
+		w.WriteHeader(http.StatusOK)
+		writeAuthOK(w)
+	}))
+	defer authServer.Close()
+
+	cleanup := setupTestConfig(t, "", authServer.URL)
+	defer cleanup()
+
+	s, cleanupServer := server.SetupTestServer(t)
+	defer cleanupServer()
+
+	conn := server.NewMockTLSConn()
+	s.HandleLogin(conn, "A001", []string{"A001", "LOGIN", "user@example.com", "pass"}, &models.ClientState{})
+
+	if response := conn.GetWrittenData(); !strings.Contains(response, "A001 OK") {
+		t.Errorf("Expected successful auth, got: %s", response)
+	}
+	if gotSecret != "s3cret" {
+		t.Errorf("Expected Direct-Auth-Secret %q, got %q", "s3cret", gotSecret)
+	}
+}
+
+// TestAuthenticateUser_DirectAuthRejected tests that a missing Direct-Auth-Secret is reported as
+// the auth service being unavailable rather than as a failed login
+func TestAuthenticateUser_DirectAuthRejected(t *testing.T) {
+	t.Setenv("IDP_DIRECT_AUTH_SECRET", "")
+
+	authServer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"code":"AUTH-4010","message":"Authentication is required"}`))
+	}))
+	defer authServer.Close()
+
+	cleanup := setupTestConfig(t, "", authServer.URL)
+	defer cleanup()
+
+	s, cleanupServer := server.SetupTestServer(t)
+	defer cleanupServer()
+
+	conn := server.NewMockTLSConn()
+	s.HandleLogin(conn, "A001", []string{"A001", "LOGIN", "user@example.com", "pass"}, &models.ClientState{})
+
+	if response := conn.GetWrittenData(); !strings.Contains(response, "A001 NO [UNAVAILABLE]") {
+		t.Errorf("Expected UNAVAILABLE response, got: %s", response)
+	}
+}
+
 // TestAuthenticateUser_MissingAuthServerURL tests authentication with missing auth server URL
 func TestAuthenticateUser_MissingAuthServerURL(t *testing.T) {
 	cleanup := setupTestConfig(t, "example.com", "")
