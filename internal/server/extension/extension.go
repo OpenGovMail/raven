@@ -21,7 +21,13 @@ type ServerDeps interface {
 
 // ===== NOOP =====
 
-func HandleNoop(deps ServerDeps, conn net.Conn, tag string, state *models.ClientState) {
+func HandleNoop(deps ServerDeps, conn net.Conn, tag string, parts []string, state *models.ClientState) {
+	// RFC 3501: NOOP takes no arguments.
+	if len(parts) > 2 {
+		deps.SendResponse(conn, fmt.Sprintf("%s BAD NOOP takes no arguments", tag))
+		return
+	}
+
 	// NOOP can be used before authentication
 	// If authenticated and a folder is selected, check for mailbox updates
 	// and send untagged responses per RFC 3501

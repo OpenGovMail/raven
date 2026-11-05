@@ -21,7 +21,7 @@ func TestNoopCommand_Unauthenticated(t *testing.T) {
 		Authenticated: false,
 	}
 
-	srv.HandleNoop(conn, "N001", state)
+	srv.HandleNoop(conn, "N001", []string{"N001", "NOOP"}, state)
 
 	response := conn.GetWrittenData()
 	lines := strings.Split(strings.TrimSpace(response), "\r\n")
@@ -38,6 +38,23 @@ func TestNoopCommand_Unauthenticated(t *testing.T) {
 	}
 }
 
+// TestNoopCommand_RejectsArguments tests NOOP with extra arguments
+func TestNoopCommand_RejectsArguments(t *testing.T) {
+	srv := server.SetupTestServerSimple(t)
+	conn := server.NewMockConn()
+	state := &models.ClientState{}
+
+	srv.HandleNoop(conn, "N004", []string{"N004", "NOOP", "extra"}, state)
+
+	response := conn.GetWrittenData()
+	if !strings.Contains(response, "N004 BAD NOOP takes no arguments") {
+		t.Errorf("Expected BAD response for extra arguments, got: %s", response)
+	}
+	if strings.Contains(response, "OK NOOP completed") {
+		t.Errorf("NOOP with extra arguments should not complete OK, got: %s", response)
+	}
+}
+
 // TestNoopCommand_AuthenticatedNoFolder tests NOOP when authenticated but no folder selected
 func TestNoopCommand_AuthenticatedNoFolder(t *testing.T) {
 	srv := server.SetupTestServerSimple(t)
@@ -48,7 +65,7 @@ func TestNoopCommand_AuthenticatedNoFolder(t *testing.T) {
 		SelectedFolder: "",
 	}
 
-	srv.HandleNoop(conn, "N002", state)
+	srv.HandleNoop(conn, "N002", []string{"N002", "NOOP"}, state)
 
 	response := conn.GetWrittenData()
 	lines := strings.Split(strings.TrimSpace(response), "\r\n")
@@ -77,7 +94,7 @@ func TestNoopCommand_WithSelectedFolder(t *testing.T) {
 	state.LastMessageCount = 0
 	state.LastRecentCount = 0
 
-	srv.HandleNoop(conn, "N003", state)
+	srv.HandleNoop(conn, "N003", []string{"N003", "NOOP"}, state)
 
 	response := conn.GetWrittenData()
 	lines := strings.Split(strings.TrimSpace(response), "\r\n")
@@ -124,7 +141,7 @@ func TestNoopCommand_AlwaysSucceeds(t *testing.T) {
 			srv := server.SetupTestServerSimple(t)
 			conn := server.NewMockConn()
 
-			srv.HandleNoop(conn, tc.tag, tc.state)
+			srv.HandleNoop(conn, tc.tag, []string{tc.tag, "NOOP"}, tc.state)
 
 			response := conn.GetWrittenData()
 
@@ -148,7 +165,7 @@ func TestNoopCommand_ResponseFormat(t *testing.T) {
 	conn := server.NewMockConn()
 	state := server.SetupAuthenticatedState(t, srv, "testuser")
 
-	srv.HandleNoop(conn, "FORMAT", state)
+	srv.HandleNoop(conn, "FORMAT", []string{"FORMAT", "NOOP"}, state)
 
 	response := conn.GetWrittenData()
 
@@ -185,7 +202,7 @@ func TestNoopCommand_TagHandling(t *testing.T) {
 			conn := server.NewMockConn()
 			state := &models.ClientState{Authenticated: false}
 
-			srv.HandleNoop(conn, tc.tag, state)
+			srv.HandleNoop(conn, tc.tag, []string{tc.tag, "NOOP"}, state)
 
 			response := conn.GetWrittenData()
 			expectedOK := tc.expectedTag + " OK NOOP completed"
@@ -209,7 +226,7 @@ func TestNoopCommand_StateTracking(t *testing.T) {
 	state.LastMessageCount = 0
 	state.LastRecentCount = 0
 
-	srv.HandleNoop(conn, "TRACK", state)
+	srv.HandleNoop(conn, "TRACK", []string{"TRACK", "NOOP"}, state)
 
 	response := conn.GetWrittenData()
 	if !strings.Contains(response, "TRACK OK NOOP completed") {
@@ -235,7 +252,7 @@ func TestNoopCommand_NewMessages(t *testing.T) {
 	state.LastMessageCount = 1 // Simulate that client knows about 1 message
 	state.LastRecentCount = 0
 
-	srv.HandleNoop(conn, "NEW", state)
+	srv.HandleNoop(conn, "NEW", []string{"NEW", "NOOP"}, state)
 
 	response := conn.GetWrittenData()
 
@@ -276,7 +293,7 @@ func TestNoopCommand_ExpungedMessages(t *testing.T) {
 	state.LastMessageCount = 5 // Client thinks there are 5 messages
 	state.LastRecentCount = 0
 
-	srv.HandleNoop(conn, "EXP", state)
+	srv.HandleNoop(conn, "EXP", []string{"EXP", "NOOP"}, state)
 
 	response := conn.GetWrittenData()
 
@@ -313,7 +330,7 @@ func TestNoopCommand_FlagChanges(t *testing.T) {
 	state.LastMessageCount = 2 // Same as current
 	state.LastRecentCount = 0  // Different from current (unseen count)
 
-	srv.HandleNoop(conn, "FLAG", state)
+	srv.HandleNoop(conn, "FLAG", []string{"FLAG", "NOOP"}, state)
 
 	response := conn.GetWrittenData()
 
@@ -348,7 +365,7 @@ func TestNoopCommand_WithMessages(t *testing.T) {
 	state.LastRecentCount = 0
 
 	conn := server.NewMockConn()
-	srv.HandleNoop(conn, "MSG", state)
+	srv.HandleNoop(conn, "MSG", []string{"MSG", "NOOP"}, state)
 
 	response := conn.GetWrittenData()
 
