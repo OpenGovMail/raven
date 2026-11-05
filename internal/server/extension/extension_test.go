@@ -55,6 +55,33 @@ func TestNoopCommand_RejectsArguments(t *testing.T) {
 	}
 }
 
+// TestNoopCommand_RejectsArgumentsWithSelectedMailbox verifies argument validation runs before mailbox polling.
+func TestNoopCommand_RejectsArgumentsWithSelectedMailbox(t *testing.T) {
+	srv := server.SetupTestServerSimple(t)
+	dbMgr := srv.GetDBManager().(*db.DBManager)
+	server.InsertTestMail(t, dbMgr, "testuser", "Test 1", "sender@test.com", "testuser@localhost", "INBOX")
+
+	state := server.SetupAuthenticatedState(t, srv, "testuser")
+	state.SelectedFolder = "INBOX"
+	state.SelectedMailboxID = 1
+	state.LastMessageCount = 0
+	state.LastRecentCount = 0
+
+	conn := server.NewMockConn()
+	srv.HandleNoop(conn, "N005", []string{"N005", "NOOP", "extra"}, state)
+
+	response := conn.GetWrittenData()
+	if response != "N005 BAD NOOP takes no arguments\r\n" {
+		t.Errorf("Expected only the exact BAD reply, got: %q", response)
+	}
+	if state.LastMessageCount != 0 {
+		t.Errorf("NOOP with arguments must not poll the mailbox, LastMessageCount changed to %d", state.LastMessageCount)
+	}
+	if state.LastRecentCount != 0 {
+		t.Errorf("NOOP with arguments must not poll the mailbox, LastRecentCount changed to %d", state.LastRecentCount)
+	}
+}
+
 // TestNoopCommand_AuthenticatedNoFolder tests NOOP when authenticated but no folder selected
 func TestNoopCommand_AuthenticatedNoFolder(t *testing.T) {
 	srv := server.SetupTestServerSimple(t)
