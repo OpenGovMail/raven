@@ -226,8 +226,11 @@ func TestNoopCommand_NewMessages(t *testing.T) {
 	// Insert test messages into INBOX
 	dbMgr := srv.GetDBManager().(*db.DBManager)
 	server.InsertTestMail(t, dbMgr, "testuser", "Test 1", "sender@test.com", "testuser@localhost", "INBOX")
-	server.InsertTestMail(t, dbMgr, "testuser", "Test 2", "sender@test.com", "testuser@localhost", "INBOX")
-	server.InsertTestMail(t, dbMgr, "testuser", "Test 3", "sender@test.com", "testuser@localhost", "INBOX")
+	newID1 := server.InsertTestMail(t, dbMgr, "testuser", "Test 2", "sender@test.com", "testuser@localhost", "INBOX")
+	newID2 := server.InsertTestMail(t, dbMgr, "testuser", "Test 3", "sender@test.com", "testuser@localhost", "INBOX")
+
+	server.UpdateMessageFlags(t, dbMgr, "testuser", newID1, `\Recent`)
+	server.UpdateMessageFlags(t, dbMgr, "testuser", newID2, `\Recent`)
 
 	// Setup state with lower message count
 	state.SelectedFolder = "INBOX"
@@ -244,7 +247,7 @@ func TestNoopCommand_NewMessages(t *testing.T) {
 		t.Errorf("Expected EXISTS response for new messages, got: %s", response)
 	}
 
-	// Should report new RECENT messages
+	// Should report the stored recent count, not the EXISTS delta
 	if !strings.Contains(response, "* 2 RECENT") {
 		t.Errorf("Expected RECENT response for new messages, got: %s", response)
 	}

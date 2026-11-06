@@ -225,6 +225,38 @@ func TestSelectCommand_StateTracking(t *testing.T) {
 // EXAMINE Command Tests
 // ============================================================================
 
+func TestSelectCommand_ClearsRecentAfterReporting(t *testing.T) {
+	srv := server.SetupTestServerSimple(t)
+	conn := server.NewMockConn()
+	database := server.GetDatabaseFromServer(srv)
+
+	userID := server.CreateTestUser(t, database, "testuser")
+	messageID := server.InsertTestMail(t, database, "testuser", "Recent", "sender@test.com", "testuser@localhost", "INBOX")
+	server.UpdateMessageFlags(t, database, "testuser", messageID, `\Recent`)
+
+	state := &models.ClientState{
+		Authenticated: true,
+		UserID:        userID,
+		Username:      "testuser",
+	}
+
+	srv.HandleSelect(conn, "A012", []string{"A012", "SELECT", "INBOX"}, state)
+
+	response := conn.GetWrittenData()
+	if !strings.Contains(response, "* 1 RECENT") {
+		t.Errorf("Expected 1 RECENT, got: %s", response)
+	}
+
+	userDB := server.GetUserDB(t, srv, "testuser")
+	var recent int
+	if err := userDB.QueryRow(`SELECT COUNT(*) FROM message_mailbox WHERE flags LIKE '%\Recent%'`).Scan(&recent); err != nil {
+		t.Fatalf("Failed to count recent flags: %v", err)
+	}
+	if recent != 0 {
+		t.Errorf("Expected recent flags cleared after SELECT, got %d", recent)
+	}
+}
+
 func TestExamineCommand_Success(t *testing.T) {
 	srv := server.SetupTestServerSimple(t)
 	conn := server.NewMockConn()
