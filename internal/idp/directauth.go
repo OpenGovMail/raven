@@ -31,7 +31,7 @@ func DirectAuthSecret() string {
 		return ""
 	}
 
-	data, err := os.ReadFile(filepath.Clean(path))
+	data, err := os.ReadFile(filepath.Clean(path)) // #nosec G304 G703 -- path comes from operator-controlled IDP_DIRECT_AUTH_SECRET_FILE
 	if err != nil {
 		log.Printf("WARNING: could not read IDP_DIRECT_AUTH_SECRET_FILE: %v", err)
 		return ""
