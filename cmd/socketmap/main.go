@@ -74,6 +74,29 @@ func main() {
 	// Initialize cache
 	cacheManager := cache.New(cfg.CacheTTLSeconds)
 
+	// Build the domain index alongside startup, not before it: a slow walk must not keep the
+	// port closed. Lookups that arrive first wait for this build instead of starting another.
+	// After that it is rebuilt on a timer, so no lookup ever waits for a refresh. The wait
+	// starts when a walk ends, so a walk slower than the interval doesn't run back to back.
+	indexTTL := time.Duration(cfg.CacheTTLSeconds) * time.Second
+	if indexTTL <= 0 {
+		indexTTL = time.Minute // without a pause the walks would run back to back
+	}
+	go func() {
+		if err := thunder.WarmIndex(cfg.ThunderHost, cfg.ThunderPort, cfg.TokenRefreshSeconds); err != nil {
+			log.Printf("⚠ Initial domain index build failed: %v", err)
+			log.Printf("  Check that raven's service account can list organization units")
+			log.Printf("  Service will retry on first request")
+		}
+
+		for {
+			time.Sleep(indexTTL)
+			if err := thunder.RefreshIndex(cfg.ThunderHost, cfg.ThunderPort, cfg.TokenRefreshSeconds); err != nil {
+				log.Printf("⚠ Domain index refresh failed, serving the previous one: %v", err)
+			}
+		}
+	}()
+
 	// Display configuration
 	log.Printf("Starting socketmap service on %s:%s", cfg.Host, cfg.Port)
 	log.Printf("Configuration:")
