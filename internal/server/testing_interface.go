@@ -80,8 +80,8 @@ func (t *TestInterface) HandleUnselect(conn net.Conn, tag string, state *models.
 }
 
 // HandleNoop exposes the noop handler for testing
-func (t *TestInterface) HandleNoop(conn net.Conn, tag string, state *models.ClientState) {
-	extension.HandleNoop(t.server, conn, tag, state)
+func (t *TestInterface) HandleNoop(conn net.Conn, tag string, parts []string, state *models.ClientState) {
+	extension.HandleNoop(t.server, conn, tag, parts, state)
 }
 
 // HandleCheck exposes the check handler for testing

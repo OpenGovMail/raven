@@ -471,7 +471,7 @@ func TestCheckCommand_VsNoop(t *testing.T) {
 			Authenticated: true,
 			Username:      "testuser",
 		}
-		srv.HandleNoop(connNoop, "N001", stateNoop)
+		srv.HandleNoop(connNoop, "N001", []string{"N001", "NOOP"}, stateNoop)
 		noopResponse := connNoop.GetWrittenData()
 
 		// Test CHECK without selected mailbox
