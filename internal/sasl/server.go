@@ -755,7 +755,12 @@ func (s *Server) authenticate(username, password string) authResult {
 		return authAccepted
 	}
 
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	if err != nil {
+		// Without the full body an AUTH-4010 rejection can't be told apart from a wrong password.
+		log.Printf("Failed to read authentication API response (status %d) for user: %s: %v", resp.StatusCode, authUsername, err)
+		return authUnavailable
+	}
 	if idp.IsDirectAuthRejection(resp.StatusCode, body) {
 		log.Printf("Authentication API refused raven's request (401 AUTH-4010) for user: %s; check IDP_DIRECT_AUTH_SECRET", authUsername)
 		return authUnavailable

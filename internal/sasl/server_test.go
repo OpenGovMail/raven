@@ -469,6 +469,25 @@ func TestPlainAuthenticationServerErrorIsTemporary(t *testing.T) {
 	}
 }
 
+// TestPlainAuthenticationTruncatedResponseIsTemporary tests that a 401 whose body is cut off is
+// a temporary failure, since it may have been an AUTH-4010 rejection
+func TestPlainAuthenticationTruncatedResponseIsTemporary(t *testing.T) {
+	response := plainAuthResponse(t, func(w http.ResponseWriter, r *http.Request) {
+		// Promise more bytes than are sent so the client sees an unexpected EOF.
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Length", "100")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"code":"AUTH-40`))
+	})
+
+	if !strings.HasPrefix(response, "FAIL\t1\t") || !strings.Contains(response, "\ttemp\t") {
+		t.Errorf("Expected temporary FAIL response, got: %s", response)
+	}
+	if strings.Contains(response, "Invalid credentials") {
+		t.Errorf("Expected no 'Invalid credentials' reason, got: %s", response)
+	}
+}
+
 // TestPlainAuthenticationWrongPasswordIsNotTemporary tests that a credential rejection stays permanent
 func TestPlainAuthenticationWrongPasswordIsNotTemporary(t *testing.T) {
 	response := plainAuthResponse(t, func(w http.ResponseWriter, r *http.Request) {

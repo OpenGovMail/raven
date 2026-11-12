@@ -196,6 +196,32 @@ func TestAuthenticateUser_DirectAuthRejected(t *testing.T) {
 	}
 }
 
+// TestAuthenticateUser_TruncatedRejectionIsUnavailable tests that a 401 whose body is cut off is
+// reported as the auth service being unavailable, since it may have been an AUTH-4010 rejection
+func TestAuthenticateUser_TruncatedRejectionIsUnavailable(t *testing.T) {
+	authServer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Promise more bytes than are sent so the client sees an unexpected EOF.
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Length", "100")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"code":"AUTH-40`))
+	}))
+	defer authServer.Close()
+
+	cleanup := setupTestConfig(t, "", authServer.URL)
+	defer cleanup()
+
+	s, cleanupServer := server.SetupTestServer(t)
+	defer cleanupServer()
+
+	conn := server.NewMockTLSConn()
+	s.HandleLogin(conn, "A001", []string{"A001", "LOGIN", "user@example.com", "pass"}, &models.ClientState{})
+
+	if response := conn.GetWrittenData(); !strings.Contains(response, "A001 NO [UNAVAILABLE]") {
+		t.Errorf("Expected UNAVAILABLE response, got: %s", response)
+	}
+}
+
 // TestAuthenticateUser_MissingAuthServerURL tests authentication with missing auth server URL
 func TestAuthenticateUser_MissingAuthServerURL(t *testing.T) {
 	cleanup := setupTestConfig(t, "example.com", "")

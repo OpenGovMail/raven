@@ -140,9 +140,9 @@ Raven reads its Thunder (ThunderID) credentials from environment variables rathe
 |-------------------------------|-----------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------|
 | `IDP_DIRECT_AUTH_SECRET`      | IMAP, SASL                  | Shared secret sent as the `Direct-Auth-Secret` header when checking a user's password. Must match Thunder's `config/secrets/direct_auth_secret`. |
 | `IDP_DIRECT_AUTH_SECRET_FILE` | IMAP, SASL                  | Path to a file containing that secret, e.g. a mounted Kubernetes Secret. Used when `IDP_DIRECT_AUTH_SECRET` is not set.                          |
-| `IDP_CLIENT_ID`               | Delivery, socketmap         | Client ID of raven's service account, used to read organization units, users and groups.                                                         |
-| `IDP_CLIENT_SECRET`           | Delivery, socketmap         | Client secret of raven's service account.                                                                                                        |
-| `IDP_RESOURCE`                | Delivery, socketmap         | Optional. Resource identifier for the service-account token. Defaults to `<auth server base URL>/mcp`.                                           |
+| `IDP_CLIENT_ID`               | IMAP, Delivery, socketmap   | Client ID of raven's service account, used to read organization units, users and groups. IMAP needs it to resolve a user's mail domain from their organization unit. |
+| `IDP_CLIENT_SECRET`           | IMAP, Delivery, socketmap   | Client secret of raven's service account. Required with `IDP_CLIENT_ID` for IMAP's organization-unit lookup.                                     |
+| `IDP_RESOURCE`                | IMAP, Delivery, socketmap   | Optional. Resource identifier for the service-account token. Defaults to `<auth server base URL>/mcp`.                                           |
 
 Thunder 1.0.0 and later reject password checks that lack the direct-auth secret with `401 AUTH-4010`, before looking at the password.
 If neither `IDP_DIRECT_AUTH_SECRET` nor `IDP_DIRECT_AUTH_SECRET_FILE` is set, the IMAP and SASL services log a warning at startup, and logins fail with a
