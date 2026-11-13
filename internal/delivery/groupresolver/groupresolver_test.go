@@ -138,6 +138,7 @@ func TestGroupMemberResolution(t *testing.T) {
 				"members": []map[string]string{
 					{"id": "user-1", "type": "user"},
 					{"id": "user-2", "type": "user"},
+					{"id": "user-3", "type": "user"},
 				},
 			}
 			_ = writeResponseJSON(w, resp)
@@ -161,6 +162,29 @@ func TestGroupMemberResolution(t *testing.T) {
 				},
 			}
 			_ = writeResponseJSON(w, resp)
+
+		case "/users/user-3":
+			resp := map[string]interface{}{
+				"id":   "user-3",
+				"ouId": "ou-silver",
+				"attributes": map[string]string{
+					"username": "carol",
+				},
+			}
+			_ = writeResponseJSON(w, resp)
+
+		// A child OU whose domain is unrelated to its grouping parent.
+		case "/organization-units/ou-silver":
+			resp := map[string]interface{}{
+				"id":     "ou-silver",
+				"handle": "silver.lsf.lk",
+				"parent": "ou-foundations",
+			}
+			_ = writeResponseJSON(w, resp)
+
+		case "/organization-units/ou-foundations":
+			t.Errorf("parent OU fetched; an OU's domain must not depend on its parents")
+			w.WriteHeader(http.StatusInternalServerError)
 
 		case "/organization-units/ou-1":
 			resp := map[string]interface{}{
@@ -192,8 +216,9 @@ func TestGroupMemberResolution(t *testing.T) {
 	}
 
 	expectedMembers := map[string]bool{
-		"alice@example.com": true,
-		"bob@example.net":   true,
+		"alice@example.com":   true,
+		"bob@example.net":     true,
+		"carol@silver.lsf.lk": true,
 	}
 
 	if len(members) != len(expectedMembers) {

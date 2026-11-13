@@ -9,8 +9,9 @@ import (
 	"raven/internal/socketmap/thunder"
 )
 
-// DomainExists checks if a domain exists in Thunder IDP
-func DomainExists(domain string, cfg *config.Config, cacheManager *cache.Cache) bool {
+// DomainExists checks if a domain exists in Thunder IDP. An error means it can't be answered
+// for now.
+func DomainExists(domain string, cfg *config.Config, cacheManager *cache.Cache) (bool, error) {
 	log.Printf("    ┌─ Domain Lookup ─────────────────")
 	log.Printf("    │ Domain: %s", domain)
 
@@ -27,7 +28,7 @@ func DomainExists(domain string, cfg *config.Config, cacheManager *cache.Cache) 
 			log.Printf("    │ Cached result: exists=%v", entry.Exists)
 			log.Printf("    │ Expires: %s", entry.Expires.Format("15:04:05"))
 			log.Printf("    └─────────────────────────────────")
-			return entry.Exists
+			return entry.Exists, nil
 		}
 
 		// Cache expired but exists - check if we should refresh
@@ -44,8 +45,8 @@ func DomainExists(domain string, cfg *config.Config, cacheManager *cache.Cache) 
 	exists, err := thunder.ValidateDomain(domain, cfg.ThunderHost, cfg.ThunderPort, cfg.TokenRefreshSeconds)
 	if err != nil {
 		log.Printf("    │ ⚠ IDP query failed: %v", err)
-		log.Printf("    │ Domain not found - Thunder unavailable")
-		exists = false
+		log.Printf("    └─────────────────────────────────")
+		return false, err
 	}
 
 	log.Printf("    │ IDP result: exists=%v", exists)
@@ -64,13 +65,20 @@ func DomainExists(domain string, cfg *config.Config, cacheManager *cache.Cache) 
 
 	log.Printf("    └─────────────────────────────────")
 
-	return exists
+	return exists, nil
 }
 
 // HandleVirtualDomainsMap handles the virtual-domains map lookup
 func HandleVirtualDomainsMap(domain string, cfg *config.Config, cacheManager *cache.Cache) string {
 	log.Printf("  │ Checking if domain is valid...")
-	exists := DomainExists(domain, cfg, cacheManager)
+	exists, err := DomainExists(domain, cfg, cacheManager)
+
+	// TEMP makes Postfix defer the mail, so the sender retries instead of getting a bounce.
+	if err != nil {
+		log.Printf("  │ Response: TEMP")
+		log.Printf("  └─────────────────────────────────────")
+		return "TEMP " + err.Error()
+	}
 
 	if exists {
 		log.Printf("  │ ✓ DOMAIN FOUND: %s", domain)

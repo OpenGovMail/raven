@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -11,8 +12,10 @@ import (
 	"raven/internal/socketmap/thunder"
 )
 
-// ResolveMailboxIdentity validates an address and returns the mailbox identity path.
-func ResolveMailboxIdentity(email string, cfg *config.Config, cacheManager *cache.Cache) (bool, string) {
+// ResolveMailboxIdentity validates an address and returns the mailbox identity path. It
+// returns an error when a lookup failed and none found the address, so the address
+// couldn't be checked.
+func ResolveMailboxIdentity(email string, cfg *config.Config, cacheManager *cache.Cache) (bool, string, error) {
 	log.Printf("    ┌─ User Lookup ───────────────────")
 	log.Printf("    │ Email: %s", email)
 
@@ -32,7 +35,7 @@ func ResolveMailboxIdentity(email string, cfg *config.Config, cacheManager *cach
 			}
 			log.Printf("    │ Expires: %s", entry.Expires.Format("15:04:05"))
 			log.Printf("    └─────────────────────────────────")
-			return entry.Exists, entry.Data
+			return entry.Exists, entry.Data, nil
 		}
 
 		// Cache expired - check if we should refresh
@@ -47,11 +50,11 @@ func ResolveMailboxIdentity(email string, cfg *config.Config, cacheManager *cach
 
 	mailboxIdentity := email
 
-	// Query Thunder IDP for user validation first.
-	exists, err := thunder.ValidateUser(email, cfg.ThunderHost, cfg.ThunderPort, cfg.TokenRefreshSeconds)
-	if err != nil {
-		log.Printf("    │ ⚠ User lookup failed: %v", err)
-		exists = false
+	// Query Thunder IDP for user validation first. A failed lookup must not read as "no such
+	// user", or Postfix bounces a real recipient, so the first failure is kept.
+	exists, lookupErr := thunder.ValidateUser(email, cfg.ThunderHost, cfg.ThunderPort, cfg.TokenRefreshSeconds)
+	if lookupErr != nil {
+		log.Printf("    │ ⚠ User lookup failed: %v", lookupErr)
 	}
 
 	// Treat group addresses as mailbox identities in user-exists map.
@@ -59,6 +62,9 @@ func ResolveMailboxIdentity(email string, cfg *config.Config, cacheManager *cach
 		groupExists, groupErr := thunder.ValidateGroupAddress(email, cfg.ThunderHost, cfg.ThunderPort, cfg.TokenRefreshSeconds)
 		if groupErr != nil {
 			log.Printf("    │ ⚠ Group lookup failed: %v", groupErr)
+			if lookupErr == nil {
+				lookupErr = groupErr
+			}
 		} else if groupExists {
 			log.Printf("    │ ✓ Group found; treating as existing user")
 			exists = true
@@ -70,6 +76,9 @@ func ResolveMailboxIdentity(email string, cfg *config.Config, cacheManager *cach
 		roleExists, roleMailboxIdentity, roleErr := thunder.ValidateRoleAddress(email, cfg.ThunderHost, cfg.ThunderPort, cfg.TokenRefreshSeconds)
 		if roleErr != nil {
 			log.Printf("    │ ⚠ Role lookup failed: %v", roleErr)
+			if lookupErr == nil {
+				lookupErr = roleErr
+			}
 		} else if roleExists {
 			log.Printf("    │ ✓ Role found; treating as existing user")
 			exists = true
@@ -77,8 +86,13 @@ func ResolveMailboxIdentity(email string, cfg *config.Config, cacheManager *cach
 		}
 	}
 
+	if !exists && lookupErr != nil && !errors.Is(lookupErr, thunder.ErrNoSuchDomain) {
+		log.Printf("    └─────────────────────────────────")
+		return false, "", lookupErr
+	}
+
 	if !exists {
-		log.Printf("    │ User/group/role not found - Thunder unavailable or no match")
+		log.Printf("    │ User/group/role not found")
 	}
 
 	log.Printf("    │ IDP result: exists=%v", exists)
@@ -99,22 +113,29 @@ func ResolveMailboxIdentity(email string, cfg *config.Config, cacheManager *cach
 	log.Printf("    └─────────────────────────────────")
 
 	if exists {
-		return true, mailboxIdentity
+		return true, mailboxIdentity, nil
 	}
 
-	return false, ""
+	return false, "", nil
 }
 
 // UserExists checks if a user, group, or role mailbox exists in Thunder IDP.
 func UserExists(email string, cfg *config.Config, cacheManager *cache.Cache) bool {
-	exists, _ := ResolveMailboxIdentity(email, cfg, cacheManager)
+	exists, _, _ := ResolveMailboxIdentity(email, cfg, cacheManager)
 	return exists
 }
 
 // HandleUserExistsMap handles the user-exists map lookup
 func HandleUserExistsMap(key string, cfg *config.Config, cacheManager *cache.Cache) string {
 	log.Printf("  │ Checking if user exists...")
-	exists, mailboxPath := ResolveMailboxIdentity(key, cfg, cacheManager)
+	exists, mailboxPath, err := ResolveMailboxIdentity(key, cfg, cacheManager)
+
+	// TEMP makes Postfix defer the mail, so the sender retries instead of getting a bounce.
+	if err != nil {
+		log.Printf("  │ Response: TEMP")
+		log.Printf("  └─────────────────────────────────────")
+		return "TEMP " + err.Error()
+	}
 
 	if exists {
 		// For virtual_mailbox_maps, Postfix expects a mailbox pathname

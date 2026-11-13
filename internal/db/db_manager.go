@@ -46,6 +46,8 @@ func (m *DBManager) GetSharedDB() *sql.DB {
 
 // GetUserDB returns a database connection for a specific user identified by email
 func (m *DBManager) GetUserDB(email string) (*sql.DB, error) {
+	email = mailboxKey(email)
+
 	// Check cache first
 	m.cacheMutex.RLock()
 	if db, exists := m.userDBCache[email]; exists {
@@ -184,6 +186,17 @@ func (m *DBManager) initUserDB(db *sql.DB) error {
 	}
 
 	return nil
+}
+
+// mailboxKey lowercases the domain, which is case-insensitive, so login and delivery open the
+// same mailbox whatever the spelling. The local part is kept: Thunder usernames are
+// case-sensitive.
+func mailboxKey(email string) string {
+	i := strings.LastIndex(email, "@")
+	if i < 0 {
+		return email
+	}
+	return email[:i] + strings.ToLower(email[i:])
 }
 
 // getUserDBPath returns the file path for a user's database
