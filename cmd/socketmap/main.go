@@ -82,6 +82,9 @@ func main() {
 	if indexTTL <= 0 {
 		indexTTL = time.Minute // without a pause the walks would run back to back
 	}
+	// Relative to the interval, so it always allows several failed refreshes: an hour with
+	// the 5-minute default.
+	thunder.SetMaxIndexAge(12 * indexTTL)
 	go func() {
 		if err := thunder.WarmIndex(cfg.ThunderHost, cfg.ThunderPort, cfg.TokenRefreshSeconds); err != nil {
 			log.Printf("⚠ Initial domain index build failed: %v", err)

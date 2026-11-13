@@ -2,6 +2,7 @@ package thunder
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -23,16 +24,31 @@ const orgUnitPageLimit = 100
 // read the index. The caller rebuilds it on a timer with RefreshIndex. A lookup waits for a
 // walk only while no index has ever been built.
 var (
-	indexMu       sync.RWMutex
-	indexByDomain map[string]string
-	indexErr      error // why the last walk failed, nil if it succeeded
-	indexBuiltAt  time.Time
+	indexMu sync.RWMutex
+	// A domain that several OUs claim maps to "", so its mail is deferred until an admin
+	// removes the duplicate, instead of bouncing or reaching the wrong organization.
+	indexByDomain    map[string]string
+	indexErr         error     // why the last walk failed, nil if it succeeded
+	indexBuiltAt     time.Time // when the last walk ended, whether or not it succeeded
+	indexRefreshedAt time.Time // when the last successful walk ended
 
 	buildMu sync.Mutex
+
+	maxIndexAge = time.Hour
 )
+
+// ErrDomainUnavailable means a domain can't be answered for now, so mail to it should be
+// deferred, not bounced.
+var ErrDomainUnavailable = errors.New("mail domain temporarily unavailable")
 
 // While no index exists, lookups share a failed walk's error this long before trying again.
 const failedBuildRetry = 5 * time.Second
+
+// SetMaxIndexAge sets how old the index may get while refreshes keep failing. After that,
+// lookups fail instead of accepting domains whose OU may have been renamed or deleted.
+func SetMaxIndexAge(d time.Duration) {
+	maxIndexAge = d
+}
 
 // WarmIndex builds the domain index so the first lookups don't wait for a tree walk. It does
 // nothing if a lookup already built one.
@@ -49,30 +65,38 @@ func RefreshIndex(host, port string, tokenRefreshSeconds int) error {
 	return storeIndex(host, port, tokenRefreshSeconds)
 }
 
-// lookupOrgUnit returns the ID of the OU that owns domain. It fails only when no index could
-// ever be built.
+// lookupOrgUnit returns the ID of the OU that owns domain. It fails with ErrDomainUnavailable
+// when no index could be built, the index is older than maxIndexAge, or several OUs claim
+// the domain.
 func lookupOrgUnit(domain, host, port string, tokenRefreshSeconds int) (string, bool, error) {
 	domain, ok := maildomain.FromHandle(domain)
 	if !ok {
 		return "", false, nil
 	}
 
-	index := currentIndex()
+	index, refreshedAt := currentIndex()
 	if index == nil {
 		if err := ensureIndex(host, port, tokenRefreshSeconds); err != nil {
-			return "", false, err
+			return "", false, fmt.Errorf("%w: %w", ErrDomainUnavailable, err)
 		}
-		index = currentIndex()
+		index, refreshedAt = currentIndex()
+	}
+
+	if age := time.Since(refreshedAt); age > maxIndexAge {
+		return "", false, fmt.Errorf("%w: domain index not refreshed for %s", ErrDomainUnavailable, age.Round(time.Second))
 	}
 
 	ouID, found := index[domain]
+	if found && ouID == "" {
+		return "", false, fmt.Errorf("%w: %s is the handle of more than one OU", ErrDomainUnavailable, domain)
+	}
 	return ouID, found, nil
 }
 
-func currentIndex() map[string]string {
+func currentIndex() (map[string]string, time.Time) {
 	indexMu.RLock()
 	defer indexMu.RUnlock()
-	return indexByDomain
+	return indexByDomain, indexRefreshedAt
 }
 
 // ensureIndex builds the index unless one exists, so callers queued behind a first build share
@@ -100,10 +124,11 @@ func storeIndex(host, port string, tokenRefreshSeconds int) error {
 
 	indexMu.Lock()
 	defer indexMu.Unlock()
+	now := time.Now()
 	if err == nil {
-		indexByDomain = index
+		indexByDomain, indexRefreshedAt = index, now
 	}
-	indexErr, indexBuiltAt = err, time.Now()
+	indexErr, indexBuiltAt = err, now
 
 	return err
 }
@@ -149,16 +174,18 @@ func buildIndex(host, port string, tokenRefreshSeconds int) (map[string]string, 
 	}
 
 	index := make(map[string]string, len(owners))
+	conflicts := 0
 	for domain, ids := range owners {
 		if len(ids) > 1 {
-			// Bouncing is safer than delivering to the wrong organization.
-			log.Printf("      │ ⚠ Domain %s is the handle of several OUs %v, ignoring it", domain, ids)
+			log.Printf("      │ ⚠ Domain %s is the handle of several OUs %v, deferring its mail", domain, ids)
+			index[domain] = ""
+			conflicts++
 			continue
 		}
 		index[domain] = ids[0]
 	}
 
-	log.Printf("      │ ✓ Domain index built: %d OUs, %d mail domains", len(visited), len(index))
+	log.Printf("      │ ✓ Domain index built: %d OUs, %d mail domains, %d claimed by several OUs", len(visited), len(index)-conflicts, conflicts)
 
 	return index, nil
 }

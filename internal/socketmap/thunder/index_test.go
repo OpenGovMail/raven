@@ -2,6 +2,7 @@ package thunder
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -155,7 +156,7 @@ func resetIndex(t *testing.T) {
 
 	reset := func() {
 		indexMu.Lock()
-		indexByDomain, indexErr, indexBuiltAt = nil, nil, time.Time{}
+		indexByDomain, indexErr, indexBuiltAt, indexRefreshedAt = nil, nil, time.Time{}, time.Time{}
 		indexMu.Unlock()
 		SetAuth(nil)
 	}
@@ -211,18 +212,47 @@ func TestIndexResolvesHandlesAnywhereInTheTree(t *testing.T) {
 	}
 }
 
-func TestIndexDropsDomainClaimedTwice(t *testing.T) {
+func TestIndexDefersDomainClaimedTwice(t *testing.T) {
 	ft := newFakeThunder(t, []fakeOU{
 		{id: "ou-a", handle: "a", children: []fakeOU{{id: "ou-a-lsf", handle: "lsf.lk"}}},
 		{id: "ou-b", handle: "b", children: []fakeOU{{id: "ou-b-lsf", handle: "lsf.lk"}}},
 		{id: "ou-ldf", handle: "ldf.lk"},
 	}, 0)
 
-	if id, found := ft.lookup(t, "lsf.lk"); found {
-		t.Errorf("lookup(lsf.lk) = %q, want not found", id)
+	if id, found, err := lookupOrgUnit("lsf.lk", ft.host, ft.port, 300); !errors.Is(err, ErrDomainUnavailable) {
+		t.Errorf("lookupOrgUnit(lsf.lk) = (%q, %v, %v), want ErrDomainUnavailable", id, found, err)
 	}
 	if _, found := ft.lookup(t, "ldf.lk"); !found {
 		t.Errorf("lookup(ldf.lk) not found, want found")
+	}
+}
+
+func TestIndexStopsServingAfterMaxAge(t *testing.T) {
+	ft := newFakeThunder(t, []fakeOU{{id: "ou-1", handle: "one.lk"}}, 0)
+	SetMaxIndexAge(time.Hour)
+	t.Cleanup(func() { SetMaxIndexAge(time.Hour) })
+
+	ft.lookup(t, "one.lk")
+	ft.fail.Store(true)
+	if err := ft.refresh(); err == nil {
+		t.Fatal("RefreshIndex() error = nil, want an error when Thunder fails")
+	}
+
+	// Refreshes have kept failing for longer than the maximum age.
+	indexMu.Lock()
+	indexRefreshedAt = time.Now().Add(-time.Hour - time.Second)
+	indexMu.Unlock()
+
+	if id, found, err := lookupOrgUnit("one.lk", ft.host, ft.port, 300); !errors.Is(err, ErrDomainUnavailable) {
+		t.Errorf("lookupOrgUnit(one.lk) with an old index = (%q, %v, %v), want ErrDomainUnavailable", id, found, err)
+	}
+
+	ft.fail.Store(false)
+	if err := ft.refresh(); err != nil {
+		t.Fatalf("RefreshIndex() error: %v", err)
+	}
+	if id, found := ft.lookup(t, "one.lk"); !found || id != "ou-1" {
+		t.Errorf("lookup(one.lk) after a successful refresh = (%q, %v), want (ou-1, true)", id, found)
 	}
 }
 
@@ -437,8 +467,8 @@ func TestIndexReportsErrorWhenNeverBuilt(t *testing.T) {
 	ft := newFakeThunder(t, []fakeOU{{id: "ou-1", handle: "one.lk"}}, 0)
 	ft.fail.Store(true)
 
-	if _, _, err := lookupOrgUnit("one.lk", ft.host, ft.port, 300); err == nil {
-		t.Fatal("lookupOrgUnit() error = nil, want an error when Thunder is unreachable")
+	if _, _, err := lookupOrgUnit("one.lk", ft.host, ft.port, 300); !errors.Is(err, ErrDomainUnavailable) {
+		t.Fatalf("lookupOrgUnit() error = %v, want ErrDomainUnavailable when Thunder is unreachable", err)
 	}
 	if ok, err := ValidateDomain("one.lk", ft.host, ft.port, 300); ok || err == nil {
 		t.Errorf("ValidateDomain() = (%v, %v), want (false, error)", ok, err)
@@ -451,7 +481,7 @@ func TestGetOrgUnitIDForDomain(t *testing.T) {
 	if id, err := GetOrgUnitIDForDomain("one.lk", ft.host, ft.port, 300); err != nil || id != "ou-1" {
 		t.Errorf("GetOrgUnitIDForDomain(one.lk) = (%q, %v), want (ou-1, nil)", id, err)
 	}
-	if _, err := GetOrgUnitIDForDomain("two.lk", ft.host, ft.port, 300); err == nil {
-		t.Error("GetOrgUnitIDForDomain(two.lk) error = nil, want not found")
+	if _, err := GetOrgUnitIDForDomain("two.lk", ft.host, ft.port, 300); !errors.Is(err, ErrNoSuchDomain) {
+		t.Errorf("GetOrgUnitIDForDomain(two.lk) error = %v, want ErrNoSuchDomain", err)
 	}
 }

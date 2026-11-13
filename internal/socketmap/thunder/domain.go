@@ -1,9 +1,13 @@
 package thunder
 
 import (
+	"errors"
 	"fmt"
 	"log"
 )
+
+// ErrNoSuchDomain means no OU has the domain as its handle: an answer, not a failed lookup.
+var ErrNoSuchDomain = errors.New("no OU has this handle")
 
 // ValidateDomain checks if a domain is the handle of an OU in Thunder IDP
 func ValidateDomain(domain, host, port string, tokenRefreshSeconds int) (bool, error) {
@@ -37,7 +41,7 @@ func GetOrgUnitIDForDomain(domain, host, port string, tokenRefreshSeconds int) (
 		return "", err
 	}
 	if !found {
-		return "", fmt.Errorf("no OU has the handle %s", domain)
+		return "", fmt.Errorf("%w: %s", ErrNoSuchDomain, domain)
 	}
 
 	return ouID, nil

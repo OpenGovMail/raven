@@ -62,8 +62,13 @@ func TestResolveMailboxEmailPriority(t *testing.T) {
 }
 
 func TestNormalizeEmail(t *testing.T) {
-	if got := normalizeEmail(" user@example.com. "); got != "user@example.com" {
-		t.Fatalf("normalizeEmail() = %q, want %q", got, "user@example.com")
+	for input, want := range map[string]string{
+		" user@example.com. ":    "user@example.com",
+		"User@Silver.Example.LK": "User@silver.example.lk",
+	} {
+		if got := normalizeEmail(input); got != want {
+			t.Fatalf("normalizeEmail(%q) = %q, want %q", input, got, want)
+		}
 	}
 
 	for _, input := range []string{"", "user", "@example.com", "user@", "a@b@c"} {

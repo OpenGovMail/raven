@@ -148,8 +148,10 @@ Path: /organization-units?limit=100 (roots), /organization-units/{id}/ous?limit=
 Used by: socketmap domain check and OU ID lookup
 
 Raven walks the whole tree, including OUs whose handle is not a domain, and maps each
-handle that is a domain to its OU ID. A domain that is the handle of more than one OU is
-left out of the map.
+handle that is a domain to its OU ID. Mail to a domain that is the handle of more than one
+OU is deferred (socketmap `TEMP`) until only one OU has it. If the walk keeps failing, the
+previous map is used for 12 refresh intervals (an hour by default); after that, lookups
+answer `TEMP` too.
 
 Required headers:
 

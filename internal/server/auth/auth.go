@@ -618,7 +618,7 @@ func normalizeEmail(value string) string {
 	}
 
 	local := strings.TrimSpace(parts[0])
-	domain := strings.Trim(strings.TrimSpace(parts[1]), ".")
+	domain := strings.ToLower(strings.Trim(strings.TrimSpace(parts[1]), "."))
 	if local == "" || domain == "" {
 		return ""
 	}
