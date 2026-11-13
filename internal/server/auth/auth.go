@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"bufio"
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
@@ -134,7 +135,22 @@ func HandleLogin(deps ServerDeps, conn net.Conn, tag string, parts []string, sta
 
 // ===== AUTHENTICATE =====
 
-func HandleAuthenticate(deps ServerDeps, conn net.Conn, tag string, parts []string, state *models.ClientState) {
+// readContinuation reads the client's reply to a "+ " challenge as one whole line from the
+// connection's buffered reader. A raw conn.Read could return part of it, or miss what the
+// reader had already buffered, and the rest would then be read and logged as a command.
+func readContinuation(reader *bufio.Reader, conn net.Conn) (string, error) {
+	_ = conn.SetReadDeadline(time.Now().Add(30 * time.Second))
+	line, err := reader.ReadString('\n')
+	if err != nil {
+		// The rest of a half-sent reply would otherwise be read, and logged, as a command.
+		_ = conn.Close()
+		return "", err
+	}
+	return strings.TrimSpace(line), nil
+}
+
+// #nosec G706 -- client values are logged with %q, which escapes CR and LF; the rest are lengths and counts
+func HandleAuthenticate(deps ServerDeps, reader *bufio.Reader, conn net.Conn, tag string, parts []string, state *models.ClientState) {
 	if len(parts) < 3 {
 		deps.SendResponse(conn, fmt.Sprintf("%s BAD AUTHENTICATE requires authentication mechanism", tag))
 		return
@@ -174,16 +190,12 @@ func HandleAuthenticate(deps ServerDeps, conn net.Conn, tag string, parts []stri
 			// Send continuation request
 			deps.SendResponse(conn, "+ ")
 
-			// Read the authentication data
-			buf := make([]byte, 8192)
-			_ = conn.SetReadDeadline(time.Now().Add(30 * time.Second))
-			n, err := conn.Read(buf)
+			reply, err := readContinuation(reader, conn)
 			if err != nil {
 				deps.SendResponse(conn, fmt.Sprintf("%s NO Authentication failed", tag))
 				return
 			}
-
-			authData = strings.TrimSpace(string(buf[:n]))
+			authData = reply
 
 			// Client may cancel authentication with a single "*". This only applies to
 			// a reply to the "+ " challenge above -- an inline value has no challenge
@@ -214,12 +226,12 @@ func HandleAuthenticate(deps ServerDeps, conn net.Conn, tag string, parts []stri
 		if len(partsNull) >= 3 {
 			username = partsNull[1]
 			password = partsNull[2]
-			log.Printf("AUTHENTICATE PLAIN: extracted username=%s (password length=%d)", username, len(password))
+			log.Printf("AUTHENTICATE PLAIN: extracted username=%q (password length=%d)", username, len(password))
 		} else if len(partsNull) == 2 {
 			// fallback: username and password
 			username = partsNull[0]
 			password = partsNull[1]
-			log.Printf("AUTHENTICATE PLAIN: fallback extracted username=%s (password length=%d)", username, len(password))
+			log.Printf("AUTHENTICATE PLAIN: fallback extracted username=%q (password length=%d)", username, len(password))
 		} else {
 			log.Printf("AUTHENTICATE PLAIN: invalid format, expected 2-3 parts, got %d", len(partsNull))
 			deps.SendResponse(conn, fmt.Sprintf("%s NO [AUTHENTICATIONFAILED] Invalid credentials format", tag))
@@ -259,14 +271,12 @@ func HandleAuthenticate(deps ServerDeps, conn net.Conn, tag string, parts []stri
 		if authData == "" || authData == "=" {
 			deps.SendResponse(conn, "+ ")
 
-			buf := make([]byte, 8192)
-			_ = conn.SetReadDeadline(time.Now().Add(30 * time.Second))
-			n, err := conn.Read(buf)
+			reply, err := readContinuation(reader, conn)
 			if err != nil {
 				deps.SendResponse(conn, fmt.Sprintf("%s NO Authentication failed", tag))
 				return
 			}
-			authData = strings.TrimSpace(string(buf[:n]))
+			authData = reply
 		}
 
 		if authData == "*" {
@@ -436,6 +446,7 @@ func HandleLogout(deps ServerDeps, conn net.Conn, tag string) {
 // ===== AUTHENTICATE USER (Shared Auth Logic) =====
 
 // Extract common authentication logic
+// #nosec G706 -- client values are logged with %q, which escapes CR and LF
 func authenticateUser(deps ServerDeps, conn net.Conn, tag string, username string, password string, state *models.ClientState) {
 	loginEmail := normalizeEmail(username)
 	if loginEmail == "" {
@@ -519,12 +530,12 @@ func authenticateUser(deps ServerDeps, conn net.Conn, tag string, username strin
 			return
 		}
 		if authResp.ID == "" {
-			log.Printf("LOGIN: auth response missing id for user: %s", username)
+			log.Printf("LOGIN: auth response missing id for user: %q", username)
 			deps.SendResponse(conn, fmt.Sprintf("%s NO [AUTHENTICATIONFAILED] Authentication failed", tag))
 			return
 		}
 
-		log.Printf("Accepting login for user: %s (type=%s)", username, authResp.Type)
+		log.Printf("Accepting login for user: %q (type=%s)", username, authResp.Type)
 
 		parts := strings.SplitN(loginEmail, "@", 2)
 		loginDomain := strings.Trim(strings.TrimSpace(parts[1]), ".")
@@ -543,13 +554,13 @@ func authenticateUser(deps ServerDeps, conn net.Conn, tag string, username strin
 		}
 
 		if expectedDomain == "" {
-			log.Printf("LOGIN: unable to resolve expected IdP domain for login '%s'", loginEmail)
+			log.Printf("LOGIN: unable to resolve expected IdP domain for login %q", loginEmail)
 			deps.SendResponse(conn, fmt.Sprintf("%s NO [AUTHENTICATIONFAILED] Authentication failed", tag))
 			return
 		}
 
 		if !strings.EqualFold(loginDomain, expectedDomain) {
-			log.Printf("LOGIN: login domain '%s' does not match OU-derived domain '%s' for user '%s'", loginDomain, expectedDomain, loginEmail)
+			log.Printf("LOGIN: login domain %q does not match OU-derived domain %q for user %q", loginDomain, expectedDomain, loginEmail)
 			deps.SendResponse(conn, fmt.Sprintf("%s NO [AUTHENTICATIONFAILED] Authentication failed", tag))
 			return
 		}
@@ -585,7 +596,7 @@ func authenticateUser(deps ServerDeps, conn net.Conn, tag string, username strin
 		deps.SendResponse(conn, fmt.Sprintf("%s OK [CAPABILITY %s] Authenticated", tag, capabilities))
 	} else {
 		body, _ := io.ReadAll(resp.Body)
-		log.Printf("LOGIN: auth server rejected login for %s (status=%d, body=%s)", username, resp.StatusCode, strings.TrimSpace(string(body)))
+		log.Printf("LOGIN: auth server rejected login for %q (status=%d, body=%q)", username, resp.StatusCode, strings.TrimSpace(string(body)))
 		deps.SendResponse(conn, fmt.Sprintf("%s NO [AUTHENTICATIONFAILED] Authentication failed", tag))
 	}
 }

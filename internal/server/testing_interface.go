@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bufio"
 	"net"
 
 	"raven/internal/models"
@@ -116,7 +117,7 @@ func (t *TestInterface) HandleAppend(conn net.Conn, tag string, parts []string, 
 
 // HandleAuthenticate exposes the authenticate handler for testing
 func (t *TestInterface) HandleAuthenticate(conn net.Conn, tag string, parts []string, state *models.ClientState) {
-	auth.HandleAuthenticate(t.server, conn, tag, parts, state)
+	auth.HandleAuthenticate(t.server, bufio.NewReader(conn), conn, tag, parts, state)
 }
 
 // HandleStartTLS exposes the STARTTLS handler for testing

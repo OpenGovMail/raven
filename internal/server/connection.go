@@ -40,8 +40,8 @@ func handleClient(s *IMAPServer, conn net.Conn, state *models.ClientState) {
 			continue
 		}
 
-		fmt.Printf("Client: %s\n", line)
 		parts := strings.Fields(line)
+		fmt.Printf("Client: %s\n", sanitizeCommandForLogging(parts, line))
 		if len(parts) < 2 {
 			s.sendResponse(conn, "* BAD Invalid command format")
 			continue
@@ -56,7 +56,7 @@ func handleClient(s *IMAPServer, conn net.Conn, state *models.ClientState) {
 		case "LOGIN":
 			auth.HandleLogin(s, conn, tag, parts, state)
 		case "AUTHENTICATE":
-			auth.HandleAuthenticate(s, conn, tag, parts, state)
+			auth.HandleAuthenticate(s, reader, conn, tag, parts, state)
 		case "LIST":
 			mailbox.HandleList(s, conn, tag, parts, state)
 		case "LSUB":
@@ -127,6 +127,15 @@ func (s *IMAPServer) sendResponse(conn net.Conn, response string) {
 	logResponse := s.sanitizeResponseForLogging(response)
 	fmt.Printf("Server: %s\n", logResponse)
 	_, _ = conn.Write([]byte(response + "\r\n"))
+}
+
+// sanitizeCommandForLogging keeps credentials out of the log. LOGIN carries a password and
+// AUTHENTICATE may carry base64 credentials or a bearer token, so their arguments are dropped.
+func sanitizeCommandForLogging(parts []string, line string) string {
+	if len(parts) > 2 && (strings.EqualFold(parts[1], "LOGIN") || strings.EqualFold(parts[1], "AUTHENTICATE")) {
+		return parts[0] + " " + parts[1] + " [CREDENTIALS OMITTED]"
+	}
+	return line
 }
 
 // sanitizeResponseForLogging removes or masks large message bodies from responses
