@@ -129,6 +129,10 @@ func HandleSelect(deps ServerDeps, conn net.Conn, tag string, parts []string, st
 	deps.SendResponse(conn, fmt.Sprintf("* %d EXISTS", count))
 	deps.SendResponse(conn, fmt.Sprintf("* %d RECENT", recent))
 
+	if !isExamine {
+		_ = db.ClearRecentFlagsPerUser(targetDB, mailboxID)
+	}
+
 	// Send REQUIRED OK untagged responses
 	if hasUnseen {
 		deps.SendResponse(conn, fmt.Sprintf("* OK [UNSEEN %d] Message %d is first unseen", unseenSeqNum, unseenSeqNum))

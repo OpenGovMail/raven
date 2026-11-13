@@ -52,19 +52,10 @@ func HandleNoop(deps ServerDeps, conn net.Conn, tag string, parts []string, stat
 			currentRecent = 0
 		}
 
-		// Debug logging
-		fmt.Printf("NOOP Debug: mailbox_id=%d, lastCount=%d, currentCount=%d, lastRecent=%d, currentRecent=%d\n",
-			state.SelectedMailboxID, state.LastMessageCount, currentCount, state.LastRecentCount, currentRecent)
-
 		// Check for new messages (EXISTS response)
 		if currentCount > state.LastMessageCount {
 			deps.SendResponse(conn, fmt.Sprintf("* %d EXISTS", currentCount))
-
-			// Calculate new recent messages
-			newRecent := currentCount - state.LastMessageCount
-			if newRecent > 0 {
-				deps.SendResponse(conn, fmt.Sprintf("* %d RECENT", newRecent))
-			}
+			deps.SendResponse(conn, fmt.Sprintf("* %d RECENT", currentRecent))
 		}
 
 		// Check for expunged (deleted) messages
@@ -138,10 +129,7 @@ func HandleIdle(deps ServerDeps, conn net.Conn, tag string, state *models.Client
 		// Notify about new messages
 		if count > prevCount {
 			deps.SendResponse(conn, fmt.Sprintf("* %d EXISTS", count))
-			newRecent := count - prevCount
-			if newRecent > 0 {
-				deps.SendResponse(conn, fmt.Sprintf("* %d RECENT", newRecent))
-			}
+			deps.SendResponse(conn, fmt.Sprintf("* %d RECENT", recent))
 		}
 
 		// Notify about expunged (deleted) messages
