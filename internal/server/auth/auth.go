@@ -584,7 +584,19 @@ func authenticateUser(deps ServerDeps, conn net.Conn, tag string, username strin
 		capabilities := strings.Join(BuildCapabilities(deps, isTLS), " ")
 		deps.SendResponse(conn, fmt.Sprintf("%s OK [CAPABILITY %s] Authenticated", tag, capabilities))
 	} else {
-		body, _ := io.ReadAll(resp.Body)
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			// Without the full body an AUTH-4010 rejection can't be told apart from a wrong password.
+			log.Printf("LOGIN: failed to read auth server response for %s (status=%d): %v", username, resp.StatusCode, err)
+			deps.SendResponse(conn, fmt.Sprintf("%s NO [UNAVAILABLE] Authentication service unavailable", tag))
+			return
+		}
+		if idp.IsDirectAuthRejection(resp.StatusCode, body) {
+			// Thunder refused raven's own request, so the user's password was never checked.
+			log.Printf("LOGIN: auth server refused raven's request for %s (401 AUTH-4010); check IDP_DIRECT_AUTH_SECRET", username)
+			deps.SendResponse(conn, fmt.Sprintf("%s NO [UNAVAILABLE] Authentication service unavailable", tag))
+			return
+		}
 		log.Printf("LOGIN: auth server rejected login for %s (status=%d, body=%s)", username, resp.StatusCode, strings.TrimSpace(string(body)))
 		deps.SendResponse(conn, fmt.Sprintf("%s NO [AUTHENTICATIONFAILED] Authentication failed", tag))
 	}

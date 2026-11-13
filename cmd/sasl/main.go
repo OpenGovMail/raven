@@ -8,6 +8,7 @@ import (
 	"syscall"
 
 	"raven/internal/conf"
+	"raven/internal/idp"
 	"raven/internal/sasl"
 )
 
@@ -39,6 +40,7 @@ func main() {
 	log.Printf("  Config path: %s", *configPath)
 	log.Printf("  Auth URL: %s", cfg.AuthServerURL)
 	log.Printf("  SASL Scope: %s", cfg.SASLScope)
+	idp.WarnIfDirectAuthSecretMissing()
 
 	// Create SASL server with scope configuration
 	server := sasl.NewServer(*socketPath, *tcpAddr, cfg.AuthServerURL, cfg.Domain, cfg.SASLScope)
