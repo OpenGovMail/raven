@@ -145,6 +145,26 @@ func TestGetUserDB_RoleMailboxIdentityPath(t *testing.T) {
 	}
 }
 
+func TestGetUserDB_DomainCaseOpensSameMailbox(t *testing.T) {
+	manager, err := NewDBManager(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewDBManager failed: %v", err)
+	}
+	t.Cleanup(func() { _ = manager.Close() })
+
+	lower, err := manager.GetUserDB("alice@silver.example.lk")
+	if err != nil {
+		t.Fatalf("GetUserDB failed: %v", err)
+	}
+	mixed, err := manager.GetUserDB("alice@Silver.EXAMPLE.lk")
+	if err != nil {
+		t.Fatalf("GetUserDB failed: %v", err)
+	}
+	if lower != mixed {
+		t.Error("alice@Silver.EXAMPLE.lk opened a different mailbox from alice@silver.example.lk")
+	}
+}
+
 func TestGetUserDB_Caching(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "db_manager_test_*")
 	if err != nil {
