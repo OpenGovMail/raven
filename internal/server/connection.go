@@ -92,7 +92,7 @@ func handleClient(s *IMAPServer, conn net.Conn, state *models.ClientState) {
 		case "NOOP":
 			extension.HandleNoop(s, conn, tag, parts, state)
 		case "CHECK":
-			message.HandleCheck(s, conn, tag, state)
+			message.HandleCheck(s, conn, tag, parts, state)
 		case "CLOSE":
 			selection.HandleClose(s, conn, tag, state)
 		case "EXPUNGE":
