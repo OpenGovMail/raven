@@ -6,6 +6,7 @@ The following table shows which versions of Raven are currently supported with s
 
 | Version | Supported          |
 | ------- | ------------------ |
+| 0.9.x   | ✅ |
 | 0.8.x   | ✅ |
 | 0.7.x   | ✅ |
 | 0.6.x   | ✅ |
