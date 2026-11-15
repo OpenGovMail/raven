@@ -46,6 +46,10 @@ func HandleNoop(deps ServerDeps, conn net.Conn, tag string, state *models.Client
 			currentRecent = 0
 		}
 
+		// Debug logging
+		fmt.Printf("NOOP Debug: mailbox_id=%d, lastCount=%d, currentCount=%d, lastRecent=%d, currentRecent=%d\n",
+			state.SelectedMailboxID, state.LastMessageCount, currentCount, state.LastRecentCount, currentRecent)
+
 		// Check for new messages (EXISTS response)
 		if currentCount > state.LastMessageCount {
 			deps.SendResponse(conn, fmt.Sprintf("* %d EXISTS", currentCount))
