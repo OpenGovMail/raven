@@ -1376,7 +1376,6 @@ func HandleAppendWithReader(deps ServerDeps, reader io.Reader, conn net.Conn, ta
 
 	// Add message to mailbox
 	internalDate := time.Now()
-	flags = utils.WithRecentFlag(flags)
 	err = db.AddMessageToMailboxPerUser(userDB, messageID, mailboxID, flags, internalDate)
 	if err != nil {
 		log.Printf("Failed to add message to mailbox: %v", err)
@@ -1535,7 +1534,6 @@ func HandleAppend(deps ServerDeps, conn net.Conn, tag string, parts []string, fu
 
 	// Add message to mailbox
 	internalDate := time.Now()
-	flags = utils.WithRecentFlag(flags)
 	err = db.AddMessageToMailboxPerUser(userDB, messageID, mailboxID, flags, internalDate)
 	if err != nil {
 		log.Printf("Failed to add message to mailbox: %v", err)
