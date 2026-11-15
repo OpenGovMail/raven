@@ -50,6 +50,18 @@ func CalculateNewFlags(currentFlags string, newFlags []string, operation string)
 	return strings.Join(flags, " ")
 }
 
+// WithRecentFlag marks a newly arrived message as recent, replacing any client-supplied value.
+func WithRecentFlag(flags string) string {
+	kept := make([]string, 0, len(strings.Fields(flags))+1)
+	for _, flag := range strings.Fields(flags) {
+		if flag != "\\Recent" {
+			kept = append(kept, flag)
+		}
+	}
+	kept = append(kept, "\\Recent")
+	return strings.Join(kept, " ")
+}
+
 // GetMailboxAttributes returns the appropriate attributes for a mailbox
 func GetMailboxAttributes(mailboxName string) string {
 	switch mailboxName {

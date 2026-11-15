@@ -434,6 +434,15 @@ func GetRecentCountPerUser(db *sql.DB, mailboxID int64) (int, error) {
 	return count, err
 }
 
+func ClearRecentFlagsPerUser(db *sql.DB, mailboxID int64) error {
+	_, err := db.Exec(`
+		UPDATE message_mailbox
+		SET flags = TRIM(REPLACE(REPLACE(flags, '\Recent ', ''), '\Recent', ''))
+		WHERE mailbox_id = ? AND flags LIKE '%\Recent%'
+	`, mailboxID)
+	return err
+}
+
 func UpdateMessageFlagsPerUser(db *sql.DB, mailboxID, messageID int64, flags string) error {
 	_, err := db.Exec(`
 		UPDATE message_mailbox
