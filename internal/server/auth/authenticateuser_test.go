@@ -272,186 +272,109 @@ func TestAuthenticateUser_SubdomainEmailFromIDP(t *testing.T) {
 	}
 }
 
-// TestAuthenticateUser_SubdomainEmailFromOrgUnitHandle verifies domain construction
-// from organization-unit handles when auth response doesn't include an email id.
-func TestAuthenticateUser_SubdomainEmailFromOrgUnitHandle(t *testing.T) {
-	tokenCalls := 0
-	t.Setenv("IDP_CLIENT_ID", "RAVEN_SYSTEM")
-	t.Setenv("IDP_CLIENT_SECRET", "svc-secret")
-	authServer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/auth/credentials/authenticate":
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte(`{"id":"019cf0a6-114a-7dad-bea1-9a36bc728ece","type":"opengovmailuser","ouId":"019cf0a5-4109-79ac-857b-07fc7b5c19ac"}`))
-		case "/oauth2/token":
-			tokenCalls++
-			if id, secret, ok := r.BasicAuth(); !ok || id != "RAVEN_SYSTEM" || secret != "svc-secret" {
-				t.Fatalf("Expected the service account's credentials, got id=%q ok=%v", id, ok)
-			}
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte(`{"access_token":"test-assertion","expires_in":3600}`))
-		case "/organization-units/019cf0a5-4109-79ac-857b-07fc7b5c19ac":
-			if r.Header.Get("Authorization") != "Bearer test-assertion" {
-				w.WriteHeader(http.StatusUnauthorized)
-				return
-			}
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte(`{"id":"019cf0a5-4109-79ac-857b-07fc7b5c19ac","handle":"opengovmail.example.com","parent":"019cf0a3-c234-7190-a4c9-d5f6860a44e9"}`))
-		default:
+// orgUnitAuthServer answers logins as a user of OU ouID and fails the test if raven asks the
+// IdP about organization units: their domains come from configuration.
+func orgUnitAuthServer(t *testing.T, ouID string) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/auth/credentials/authenticate" {
+			t.Errorf("unexpected IdP request %s; OU domains must come from configuration", r.URL.Path)
 			w.WriteHeader(http.StatusNotFound)
+			return
 		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"id":"019cf0a6-114a-7dad-bea1-9a36bc728ece","type":"opengovmailuser","ouId":%q}`, ouID)
 	}))
-	defer authServer.Close()
+	t.Cleanup(srv.Close)
+	return srv
+}
 
-	cleanup := setupTestConfig(t, "", authServer.URL+"/auth/credentials/authenticate")
-	defer cleanup()
+// setupOrgUnitDomainsConfig writes a config whose organization_unit_domains maps ouID to domains.
+func setupOrgUnitDomainsConfig(t *testing.T, authServerURL, ouID string, domains ...string) {
+	t.Helper()
+	tmpDir := t.TempDir()
+	t.Chdir(tmpDir)
 
-	err := os.WriteFile(".env", []byte("applicationId=019cf09f-8956-7534-ab59-88622ff2ad97\n"), 0644)
-	if err != nil {
-		t.Fatalf("Failed to write .env file: %v", err)
+	var b strings.Builder
+	fmt.Fprintf(&b, "auth_server_url: %s\norganization_unit_domains:\n  %q:\n", authServerURL, ouID)
+	for _, d := range domains {
+		fmt.Fprintf(&b, "    - %q\n", d)
 	}
-
-	_, err = conf.LoadConfig()
-	if err != nil {
-		t.Fatalf("Failed to load config: %v", err)
-	}
-
-	s, cleanupServer := server.SetupTestServer(t)
-	defer cleanupServer()
-
-	conn := server.NewMockTLSConn()
-	state := &models.ClientState{}
-
-	s.HandleLogin(conn, "A001", []string{"A001", "LOGIN", "user2@opengovmail.example.com", "password"}, state)
-
-	response := conn.GetWrittenData()
-	if !strings.Contains(response, "A001 OK") {
-		t.Fatalf("Expected successful login, got: %s", response)
-	}
-
-	if state.Email != "user2@opengovmail.example.com" {
-		t.Fatalf("Expected OU-derived subdomain email, got: %s", state.Email)
-	}
-
-	if tokenCalls == 0 {
-		t.Fatalf("Expected the token endpoint to be called, got %d calls", tokenCalls)
+	if err := os.WriteFile(filepath.Join(tmpDir, "raven.yaml"), []byte(b.String()), 0600); err != nil {
+		t.Fatalf("Failed to write config: %v", err)
 	}
 }
 
-// TestAuthenticateUser_UsernameWithDomainMismatchFromOrgUnit rejects email logins
-// when the login domain does not match the OU-derived domain.
-func TestAuthenticateUser_UsernameWithDomainMismatchFromOrgUnit(t *testing.T) {
-	t.Setenv("IDP_CLIENT_ID", "RAVEN_SYSTEM")
-	t.Setenv("IDP_CLIENT_SECRET", "svc-secret")
-	tokenCalls := 0
+// TestAuthenticateUser_OrgUnitDomains checks the login domain against the domains configured
+// for the user's OU.
+func TestAuthenticateUser_OrgUnitDomains(t *testing.T) {
+	const ouID = "019cf0a5-4109-79ac-857b-07fc7b5c19ac"
 
-	authServer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/auth/credentials/authenticate":
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte(`{"id":"019cf0a6-114a-7dad-bea1-9a36bc728ece","type":"opengovmailuser","ouId":"019cf0a5-4109-79ac-857b-07fc7b5c19ac"}`))
-		case "/oauth2/token":
-			tokenCalls++
-			if id, secret, ok := r.BasicAuth(); !ok || id != "RAVEN_SYSTEM" || secret != "svc-secret" {
-				t.Fatalf("Expected the service account's credentials, got id=%q ok=%v", id, ok)
-			}
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte(`{"access_token":"test-assertion","expires_in":3600}`))
-		case "/organization-units/019cf0a5-4109-79ac-857b-07fc7b5c19ac":
-			if r.Header.Get("Authorization") != "Bearer test-assertion" {
-				w.WriteHeader(http.StatusUnauthorized)
+	tests := []struct {
+		name      string
+		mappedOU  string
+		domains   []string
+		login     string
+		wantOK    bool
+		wantEmail string
+	}{
+		{
+			name:      "login domain is the OU's domain",
+			mappedOU:  ouID,
+			domains:   []string{"opengovmail.example.com"},
+			login:     "user2@OpenGovMail.example.com",
+			wantOK:    true,
+			wantEmail: "user2@opengovmail.example.com",
+		},
+		{
+			name:     "login domain is not the OU's domain",
+			mappedOU: ouID,
+			domains:  []string{"opengovmail.example.com"},
+			login:    "user2@sil.example.com",
+		},
+		{
+			name:      "login domain is one of the OU's several domains",
+			mappedOU:  ouID,
+			domains:   []string{"a.example.com", "b.example.com"},
+			login:     "user2@b.example.com",
+			wantOK:    true,
+			wantEmail: "user2@b.example.com",
+		},
+		{
+			name:     "login domain belongs to another OU",
+			mappedOU: "some-other-ou",
+			domains:  []string{"opengovmail.example.com"},
+			login:    "user2@opengovmail.example.com",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			authServer := orgUnitAuthServer(t, ouID)
+			setupOrgUnitDomainsConfig(t, authServer.URL+"/auth/credentials/authenticate", tt.mappedOU, tt.domains...)
+
+			s, cleanupServer := server.SetupTestServer(t)
+			defer cleanupServer()
+
+			conn := server.NewMockTLSConn()
+			state := &models.ClientState{}
+
+			s.HandleLogin(conn, "A001", []string{"A001", "LOGIN", tt.login, "password"}, state)
+
+			response := conn.GetWrittenData()
+			if tt.wantOK {
+				if !strings.Contains(response, "A001 OK") {
+					t.Fatalf("Expected successful login, got: %s", response)
+				}
+				if state.Email != tt.wantEmail {
+					t.Fatalf("state.Email = %q, want %q", state.Email, tt.wantEmail)
+				}
 				return
 			}
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte(`{"id":"019cf0a5-4109-79ac-857b-07fc7b5c19ac","handle":"opengovmail.example.com","parent":"019cf0a3-c234-7190-a4c9-d5f6860a44e9"}`))
-		default:
-			w.WriteHeader(http.StatusNotFound)
-		}
-	}))
-	defer authServer.Close()
-
-	cleanup := setupTestConfig(t, "", authServer.URL+"/auth/credentials/authenticate")
-	defer cleanup()
-
-	err := os.WriteFile(".env", []byte("applicationId=019cf09f-8956-7534-ab59-88622ff2ad97\n"), 0644)
-	if err != nil {
-		t.Fatalf("Failed to write .env file: %v", err)
-	}
-
-	s, cleanupServer := server.SetupTestServer(t)
-	defer cleanupServer()
-
-	conn := server.NewMockTLSConn()
-	state := &models.ClientState{}
-
-	s.HandleLogin(conn, "A001", []string{"A001", "LOGIN", "user2@sil.example.com", "password"}, state)
-
-	response := conn.GetWrittenData()
-	if !strings.Contains(response, "NO [AUTHENTICATIONFAILED]") {
-		t.Fatalf("Expected domain mismatch authentication failure, got: %s", response)
-	}
-}
-
-// TestAuthenticateUser_UsernameWithDomainMatchesOrgUnit accepts email logins
-// when the login domain matches the OU-derived domain.
-func TestAuthenticateUser_UsernameWithDomainMatchesOrgUnit(t *testing.T) {
-	t.Setenv("IDP_CLIENT_ID", "RAVEN_SYSTEM")
-	t.Setenv("IDP_CLIENT_SECRET", "svc-secret")
-	tokenCalls := 0
-
-	authServer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/auth/credentials/authenticate":
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte(`{"id":"019cf0a6-114a-7dad-bea1-9a36bc728ece","type":"opengovmailuser","ouId":"019cf0a5-4109-79ac-857b-07fc7b5c19ac"}`))
-		case "/oauth2/token":
-			tokenCalls++
-			if id, secret, ok := r.BasicAuth(); !ok || id != "RAVEN_SYSTEM" || secret != "svc-secret" {
-				t.Fatalf("Expected the service account's credentials, got id=%q ok=%v", id, ok)
+			if !strings.Contains(response, "NO [AUTHENTICATIONFAILED]") {
+				t.Fatalf("Expected authentication failure, got: %s", response)
 			}
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte(`{"access_token":"test-assertion","expires_in":3600}`))
-		case "/organization-units/019cf0a5-4109-79ac-857b-07fc7b5c19ac":
-			if r.Header.Get("Authorization") != "Bearer test-assertion" {
-				w.WriteHeader(http.StatusUnauthorized)
-				return
-			}
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte(`{"id":"019cf0a5-4109-79ac-857b-07fc7b5c19ac","handle":"opengovmail.example.com","parent":"019cf0a3-c234-7190-a4c9-d5f6860a44e9"}`))
-		default:
-			w.WriteHeader(http.StatusNotFound)
-		}
-	}))
-	defer authServer.Close()
-
-	cleanup := setupTestConfig(t, "", authServer.URL+"/auth/credentials/authenticate")
-	defer cleanup()
-
-	err := os.WriteFile(".env", []byte("applicationId=019cf09f-8956-7534-ab59-88622ff2ad97\n"), 0644)
-	if err != nil {
-		t.Fatalf("Failed to write .env file: %v", err)
-	}
-
-	s, cleanupServer := server.SetupTestServer(t)
-	defer cleanupServer()
-
-	conn := server.NewMockTLSConn()
-	state := &models.ClientState{}
-
-	s.HandleLogin(conn, "A001", []string{"A001", "LOGIN", "user2@opengovmail.example.com", "password"}, state)
-
-	response := conn.GetWrittenData()
-	if !strings.Contains(response, "A001 OK") {
-		t.Fatalf("Expected successful authentication, got: %s", response)
+		})
 	}
 }
 

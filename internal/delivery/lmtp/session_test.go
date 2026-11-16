@@ -17,6 +17,7 @@ import (
 	"raven/internal/delivery/config"
 	"raven/internal/delivery/groupresolver"
 	"raven/internal/delivery/storage"
+	"raven/internal/maildomain"
 )
 
 // mockConn implements net.Conn for testing
@@ -1080,20 +1081,6 @@ func TestGroupEmailDelivery(t *testing.T) {
 				},
 			})
 
-		case "/organization-units/ou-1":
-			_ = writeJSON(w, map[string]any{
-				"id":     "ou-1",
-				"handle": "example.com",
-				"parent": nil,
-			})
-
-		case "/organization-units/ou-2":
-			_ = writeJSON(w, map[string]any{
-				"id":     "ou-2",
-				"handle": "example.net",
-				"parent": nil,
-			})
-
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
@@ -1127,7 +1114,14 @@ func TestGroupEmailDelivery(t *testing.T) {
 	cfg.Delivery.QuotaEnabled = false
 
 	conn := newMockConn()
-	resolver := groupresolver.NewGroupResolver(idpServer.URL)
+	mailDomains, err := maildomain.NewMap(map[string][]string{
+		"ou-1": {"example.com"},
+		"ou-2": {"example.net"},
+	})
+	if err != nil {
+		t.Fatalf("Failed to build mail domain map: %v", err)
+	}
+	resolver := groupresolver.NewGroupResolver(idpServer.URL, mailDomains)
 	session := NewSession(conn, stor, cfg, resolver)
 
 	// Send complete LMTP transaction with group email

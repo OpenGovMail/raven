@@ -262,10 +262,14 @@ func (s *Session) resolveGroupIfNeeded(recipient string) ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse group email: %w", err)
 	}
+	_, groupDomain, err := parseEmail(recipient)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse group email: %w", err)
+	}
 
 	log.Printf("Resolving group email: %s (group=%s)", recipient, groupName)
 
-	members, err := s.groupResolver.ResolveGroupMembers(groupName)
+	members, err := s.groupResolver.ResolveGroupMembers(groupName, groupDomain)
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve group members: %w", err)
 	}

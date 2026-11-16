@@ -126,6 +126,8 @@ These certificates are required for secure connections on port 993 and STARTTLS 
 Raven requires a configuration file named `raven.yaml` located in `/etc/raven` inside the Docker container for IMAP server. 
 You can see an [example raven.yaml](../config/raven.yaml) for your reference. Update the `raven.yaml` file according to your config.
 
+`organization_unit_domains` maps each organization unit ID to the list of mail domains it owns. Raven uses it to accept mail for a domain, to check the domain at login, and to address group members. An organization unit's handle is not used as its domain. The socketmap and delivery services read this mapping from the same `raven.yaml`, so mount it into their containers too.
+
 
 ### Delivery Service Configuration File (`delivery.yaml`)
 

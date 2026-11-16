@@ -44,7 +44,7 @@ func ValidateUser(email, host, port string, tokenRefreshSeconds int) (bool, erro
 	}
 
 	// Get the OU ID for the domain
-	ouID, err := GetOrgUnitIDForDomain(domain, host, port, tokenRefreshSeconds)
+	ouID, err := GetOrgUnitIDForDomain(domain)
 	if err != nil {
 		log.Printf("      │ ⚠ Failed to get OU ID: %v", err)
 		log.Printf("      └──────────────────────────────")

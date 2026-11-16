@@ -29,15 +29,15 @@ Out of scope:
 
 - Authenticates with Thunder via flow API.
 - Validates domain, user, and group-address existence.
-- Reads the whole OU tree to map each mail domain (an OU handle) to its OU ID, and
-  rebuilds that map on a timer every `CACHE_TTL_SECONDS`. Lookups only read the map, so
-  an OU that is added, renamed or removed shows up after the next rebuild.
+- Maps a mail domain to its OU ID with `organization_unit_domains` in `raven.yaml`, not
+  with Thunder. A domain that isn't listed there answers `NOTFOUND`.
 
 ### 2) LMTP delivery group resolver flow
 
 - Authenticates with Thunder via flow API using service credentials.
 - Resolves groups recursively to members.
-- Resolves member users to email addresses using user and OU APIs.
+- Resolves member users to email addresses: the username from the user API, the domain
+  from the user's OU in `organization_unit_domains`.
 
 ### 3) Thunderbird OAuth client flow
 
@@ -45,22 +45,26 @@ Out of scope:
 - Raven depends on the resulting access token behavior and key-discovery behavior.
 - These are client-facing dependencies and must be included in the consumer contract.
 
-## Mail Domain Handles
+## Mail Domains
 
-An OU's handle is its mail domain, so a handle that is a domain must belong to exactly one
-OU in the whole tree. Raven does not rely on Thunder to enforce this, so it is left to
-whoever administers the tree.
+Raven does not read mail domains from Thunder. `organization_unit_domains` in `raven.yaml`
+maps each OU ID to the list of domains that OU owns:
 
-If two OUs share a domain handle:
+```yaml
+organization_unit_domains:
+  "<ou-id>":
+    - "example.com"
+    - "example.org"
+```
 
-- Socketmap refuses the domain and logs a warning that names both OUs. Postfix then
-  rejects mail for it.
-- IMAP login and group expansion read one OU at a time and do not see the clash. Users
-  with the same username in the two OUs resolve to the same address, and so to the same
-  mailbox.
+- A domain can belong to only one OU. Raven refuses to start if two OUs list the same one.
+- An OU that isn't listed owns no mail domain.
+- An OU's handle, name and place in the tree play no part.
+- When an OU owns several domains, IMAP login accepts any of them, OAUTHBEARER uses the
+  domain of the SASL user, and group expansion uses the group address's domain. If that
+  domain isn't one of the OU's, the login fails or the member is skipped.
 
-Rename one of the OUs to fix it. Socketmap picks up the change at its next rebuild, and
-its lookup cache can keep an earlier answer for one more `CACHE_TTL_SECONDS`.
+Raven reads the mapping at startup, so a change needs a restart.
 
 ## API Summary
 
@@ -68,16 +72,14 @@ its lookup cache can keep an earlier answer for one more `CACHE_TTL_SECONDS`.
 |---|---|---|---|
 | 1 | POST | /flow/execute | Start auth flow |
 | 2 | POST | /flow/execute | Complete auth flow |
-| 3 | GET | /organization-units, /organization-units/{id}/ous | Map mail domains to OU IDs |
-| 4 | GET | /users?filter=... | User existence validation |
-| 5 | GET | /groups?filter=... | Group-address validation |
-| 6 | GET | /groups | Group name to group ID lookup |
-| 7 | GET | /groups/{groupId}/members | Group member resolution |
-| 8 | GET | /users/{userId} | Resolve member user profile |
-| 9 | GET | /organization-units/{id} | Read an OU's mail domain (its handle) |
-| 10 | GET | /oauth2/authorize | Thunderbird authorization redirect/login |
-| 11 | POST | /oauth2/token | Thunderbird code-to-token exchange and refresh |
-| 12 | GET | /oauth2/jwks | Public key discovery for token verification |
+| 3 | GET | /users?filter=... | User existence validation |
+| 4 | GET | /groups?filter=... | Group-address validation |
+| 5 | GET | /groups | Group name to group ID lookup |
+| 6 | GET | /groups/{groupId}/members | Group member resolution |
+| 7 | GET | /users/{userId} | Resolve member user profile |
+| 8 | GET | /oauth2/authorize | Thunderbird authorization redirect/login |
+| 9 | POST | /oauth2/token | Thunderbird code-to-token exchange and refresh |
+| 10 | GET | /oauth2/jwks | Public key discovery for token verification |
 
 ## Endpoint Contracts
 
@@ -141,42 +143,7 @@ Contract rules:
 - assertion must be a JWT with 3 segments.
 - JWT must include exp claim (Raven uses it for cache expiry).
 
-### 3) List Organization Units
-
-Method: GET  
-Path: /organization-units?limit=100 (roots), /organization-units/{id}/ous?limit=100 (children)  
-Used by: socketmap domain check and OU ID lookup
-
-Raven walks the whole tree, including OUs whose handle is not a domain, and maps each
-handle that is a domain to its OU ID. Mail to a domain that is the handle of more than one
-OU is deferred (socketmap `TEMP`) until only one OU has it. If the walk keeps failing, the
-previous map is used for 12 refresh intervals (an hour by default); after that, lookups
-answer `TEMP` too. Answers cached before then can last one more cache interval.
-
-Required headers:
-
-| Header | Required | Notes |
-|---|---|---|
-| Authorization: Bearer <assertion> | Yes | System token |
-
-Response fields:
-
-| Field | Required | Notes |
-|---|---|---|
-| organizationUnits[].id | Yes | OU ID used for user/group matching |
-| organizationUnits[].handle | Yes | The OU's mail domain, when it is one |
-| links[] | Yes | Raven follows `rel: "next"` until it is absent |
-
-Expected statuses:
-
-- 200: page returned. An OU with no children returns 200 with an empty list.
-
-Contract rules:
-
-- `limit` must accept 100 (Thunder rejects anything larger).
-- `links[].href` is a path relative to the Thunder base URL.
-
-### 4) Find Users by Username Filter
+### 3) Find Users by Username Filter
 
 Method: GET  
 Path: /users?filter=...  
@@ -200,11 +167,11 @@ Response fields:
 |---|---|---|
 | totalResults | Yes | Zero means user not found |
 | users[].id | Yes | Iteration/logging |
-| users[].organizationUnit | Yes | Must match domain OU ID |
+| users[].organizationUnit | Yes | Must match the domain's OU ID from `organization_unit_domains` |
 
 Expected status: 200
 
-### 5) Find Groups by Name Filter
+### 4) Find Groups by Name Filter
 
 Method: GET  
 Path: /groups?filter=...  
@@ -228,11 +195,11 @@ Response fields:
 |---|---|---|
 | totalResults | Yes | Zero means group not found |
 | groups[].name | Yes | Must match expected group name |
-| groups[].organizationUnitId | Yes | Must match domain OU ID |
+| groups[].organizationUnitId | Yes | Must match the domain's OU ID from `organization_unit_domains` |
 
 Expected status: 200
 
-### 6) List Groups
+### 5) List Groups
 
 Method: GET  
 Path: /groups  
@@ -253,7 +220,7 @@ Response fields:
 
 Expected status: 200
 
-### 7) Get Group Members
+### 6) Get Group Members
 
 Method: GET  
 Path: /groups/{groupId}/members  
@@ -278,7 +245,7 @@ Contract rule:
 
 - members[].type semantics for user and group must remain stable.
 
-### 8) Get User by ID
+### 7) Get User by ID
 
 Method: GET  
 Path: /users/{userId}  
@@ -301,39 +268,13 @@ Raven resolves username/email using first non-empty field in this order:
 7. attributes.name
 8. name
 
-Org-unit fallback fields:
+Org-unit fields, looked up in `organization_unit_domains` for the member's domain:
 
-- organizationUnit or organization_unit
-
-Expected status: 200
-
-### 9) Get Organization Unit by ID
-
-Method: GET  
-Path: /organization-units/{id}  
-Used by: IMAP login domain check and delivery group resolver
-
-Required headers:
-
-| Header | Required | Notes |
-|---|---|---|
-| Authorization: Bearer <assertion> | Yes | System token |
-
-Response fields:
-
-| Field | Required | Notes |
-|---|---|---|
-| handle | Yes | The OU's mail domain |
+- ouId or organization_unit
 
 Expected status: 200
 
-Contract rules:
-
-- The handle is the whole mail domain, of any depth. Parents are not fetched.
-- A handle that is not a domain (fewer than two labels, or characters outside
-  `a-z 0-9 - _`) means the OU has no mail domain.
-
-### 10) OAuth2 Authorize (Thunderbird)
+### 8) OAuth2 Authorize (Thunderbird)
 
 Method: GET  
 Path: /oauth2/authorize  
@@ -361,7 +302,7 @@ Expected behavior:
 - Successful user authentication and consent returns redirect with authorization code.
 - Error responses follow OAuth 2.0 conventions with error and error_description.
 
-### 11) OAuth2 Token (Thunderbird)
+### 9) OAuth2 Token (Thunderbird)
 
 Method: POST  
 Path: /oauth2/token  
@@ -394,7 +335,7 @@ Contract rules:
 - JWT should include exp, iss, aud, and sub claims.
 - token_type must remain Bearer.
 
-### 12) OAuth2 JWKS
+### 10) OAuth2 JWKS
 
 Method: GET  
 Path: /oauth2/jwks  
@@ -434,7 +375,7 @@ The following are breaking for Raven unless coordinated:
 - Remove required request fields Raven sends.
 - Remove or rename required response fields Raven reads.
 - Change semantic meaning of required fields.
-- Return non-200 for expected-success calls, except documented 404 on OU tree lookup.
+- Return non-200 for expected-success calls.
 - Return non-JWT assertion, or JWT without exp.
 - Change members[].type semantics so user and group can no longer be interpreted.
 - Break OAuth authorize request compatibility for Thunderbird required parameters.

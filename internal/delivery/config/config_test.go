@@ -2,6 +2,7 @@ package config_test
 
 import (
 	"os"
+	"path/filepath"
 	"testing"
 
 	"raven/internal/delivery/config"
@@ -172,5 +173,48 @@ func TestConfigValidation(t *testing.T) {
 				t.Errorf("Expected no error but got: %v", err)
 			}
 		})
+	}
+}
+
+// loadWithRavenYAML loads a minimal delivery.yaml from a directory whose raven.yaml has
+// ravenYAML.
+func loadWithRavenYAML(t *testing.T, ravenYAML string) (*config.Config, error) {
+	t.Helper()
+	dir := t.TempDir()
+	t.Chdir(dir)
+	if err := os.WriteFile(filepath.Join(dir, "raven.yaml"), []byte(ravenYAML), 0600); err != nil {
+		t.Fatalf("write raven.yaml: %v", err)
+	}
+	deliveryPath := filepath.Join(dir, "delivery.yaml")
+	if err := os.WriteFile(deliveryPath, []byte("lmtp:\n  tcp_address: 127.0.0.1:24\n"), 0600); err != nil {
+		t.Fatalf("write delivery.yaml: %v", err)
+	}
+	return config.LoadConfig(deliveryPath)
+}
+
+func TestLoadConfig_OrganizationUnitDomains(t *testing.T) {
+	cfg, err := loadWithRavenYAML(t, `auth_server_url: https://idp.example.com/auth
+organization_unit_domains:
+  ou-1: [example.com, example.org]
+`)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.IDPBaseURL != "https://idp.example.com" {
+		t.Errorf("IDPBaseURL = %q", cfg.IDPBaseURL)
+	}
+	if got := cfg.MailDomains.Domains("ou-1"); len(got) != 2 {
+		t.Errorf("Domains(ou-1) = %v, want 2 domains", got)
+	}
+}
+
+func TestLoadConfig_InvalidOrganizationUnitDomains(t *testing.T) {
+	_, err := loadWithRavenYAML(t, `auth_server_url: https://idp.example.com/auth
+organization_unit_domains:
+  ou-1: [example.com]
+  ou-2: [example.com]
+`)
+	if err == nil {
+		t.Fatal("LoadConfig succeeded with a domain listed under two organization units")
 	}
 }

@@ -458,3 +458,55 @@ auth_server_url: https://auth.test.example.com
 		})
 	}
 }
+
+// loadConfigFrom writes content as raven.yaml in a temp directory and loads it from there.
+func loadConfigFrom(t *testing.T, content string) (*Config, error) {
+	t.Helper()
+	tmpDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tmpDir, "raven.yaml"), []byte(content), 0600); err != nil {
+		t.Fatalf("Failed to create test config file: %v", err)
+	}
+	t.Chdir(tmpDir)
+	return LoadConfig()
+}
+
+func TestLoadConfig_OrganizationUnitDomains(t *testing.T) {
+	cfg, err := loadConfigFrom(t, `auth_server_url: https://auth.example.com
+organization_unit_domains:
+  ou-1:
+    - Example.COM
+    - example.org.
+  ou-2:
+    - dept.example.gov
+`)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+
+	if got := cfg.MailDomains.Domains("ou-1"); len(got) != 2 || got[0] != "example.com" || got[1] != "example.org" {
+		t.Errorf("Domains(ou-1) = %v, want [example.com example.org]", got)
+	}
+	if ou, ok := cfg.MailDomains.OrgUnit("dept.example.gov"); !ok || ou != "ou-2" {
+		t.Errorf("OrgUnit(dept.example.gov) = (%q, %v), want (ou-2, true)", ou, ok)
+	}
+}
+
+func TestLoadConfig_NoOrganizationUnitDomains(t *testing.T) {
+	cfg, err := loadConfigFrom(t, "auth_server_url: https://auth.example.com\n")
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.MailDomains.Len() != 0 {
+		t.Errorf("MailDomains.Len() = %d, want 0", cfg.MailDomains.Len())
+	}
+}
+
+func TestLoadConfig_DomainUnderTwoOrganizationUnits(t *testing.T) {
+	_, err := loadConfigFrom(t, `organization_unit_domains:
+  ou-1: [example.com]
+  ou-2: [example.com]
+`)
+	if err == nil {
+		t.Fatal("Expected an error for a domain listed under two organization units, got nil")
+	}
+}

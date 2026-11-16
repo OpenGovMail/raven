@@ -5,9 +5,13 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
+	"sort"
 	"strings"
 	"testing"
 	"time"
+
+	"raven/internal/maildomain"
 )
 
 func writeResponseJSON(w http.ResponseWriter, payload any) bool {
@@ -81,7 +85,7 @@ func TestGroupResolverAuthentication(t *testing.T) {
 	}))
 	defer server.Close()
 
-	gr := NewGroupResolver(server.URL)
+	gr := NewGroupResolver(server.URL, nil)
 	assertion, err := gr.getOrFreshAssertion()
 
 	if err != nil {
@@ -173,62 +177,53 @@ func TestGroupMemberResolution(t *testing.T) {
 			}
 			_ = writeResponseJSON(w, resp)
 
-		// A child OU whose domain is unrelated to its grouping parent.
-		case "/organization-units/ou-silver":
-			resp := map[string]interface{}{
-				"id":     "ou-silver",
-				"handle": "silver.lsf.lk",
-				"parent": "ou-foundations",
-			}
-			_ = writeResponseJSON(w, resp)
-
-		case "/organization-units/ou-foundations":
-			t.Errorf("parent OU fetched; an OU's domain must not depend on its parents")
-			w.WriteHeader(http.StatusInternalServerError)
-
-		case "/organization-units/ou-1":
-			resp := map[string]interface{}{
-				"id":     "ou-1",
-				"handle": "example.com",
-				"parent": nil,
-			}
-			_ = writeResponseJSON(w, resp)
-
-		case "/organization-units/ou-2":
-			resp := map[string]interface{}{
-				"id":     "ou-2",
-				"handle": "example.net",
-				"parent": nil,
-			}
-			_ = writeResponseJSON(w, resp)
-
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
 	}))
 	defer server.Close()
 
-	gr := NewGroupResolver(server.URL)
-	members, err := gr.ResolveGroupMembers("engineering")
-
+	// The domains come from configuration; the IdP is never asked about organization units.
+	mailDomains, err := maildomain.NewMap(map[string][]string{
+		"ou-1":      {"example.com"},
+		"ou-2":      {"example.net"},
+		"ou-silver": {"silver.lsf.lk", "lsf.lk"},
+	})
 	if err != nil {
-		t.Fatalf("ResolveGroupMembers() error = %v", err)
+		t.Fatalf("NewMap() error = %v", err)
+	}
+	gr := NewGroupResolver(server.URL, mailDomains)
+
+	tests := []struct {
+		name        string
+		groupDomain string
+		want        []string
+	}{
+		{
+			// carol's OU owns the group's domain, so she is addressed there.
+			name:        "group domain owned by a multi-domain OU",
+			groupDomain: "lsf.lk",
+			want:        []string{"alice@example.com", "bob@example.net", "carol@lsf.lk"},
+		},
+		{
+			// carol's OU owns several domains and not the group's, so she can't be addressed.
+			name:        "group domain not owned by a multi-domain OU",
+			groupDomain: "example.com",
+			want:        []string{"alice@example.com", "bob@example.net"},
+		},
 	}
 
-	expectedMembers := map[string]bool{
-		"alice@example.com":   true,
-		"bob@example.net":     true,
-		"carol@silver.lsf.lk": true,
-	}
-
-	if len(members) != len(expectedMembers) {
-		t.Errorf("ResolveGroupMembers() returned %d members, expected %d", len(members), len(expectedMembers))
-	}
-
-	for _, member := range members {
-		if !expectedMembers[member] {
-			t.Errorf("unexpected member: %s", member)
-		}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			members, err := gr.ResolveGroupMembers("engineering", tt.groupDomain)
+			if err != nil {
+				t.Fatalf("ResolveGroupMembers() error = %v", err)
+			}
+			sort.Strings(members)
+			if !reflect.DeepEqual(members, tt.want) {
+				t.Errorf("ResolveGroupMembers() = %v, want %v", members, tt.want)
+			}
+		})
 	}
 }
 
@@ -262,8 +257,8 @@ func TestGroupNotFound(t *testing.T) {
 	}))
 	defer server.Close()
 
-	gr := NewGroupResolver(server.URL)
-	_, err := gr.ResolveGroupMembers("nonexistent")
+	gr := NewGroupResolver(server.URL, nil)
+	_, err := gr.ResolveGroupMembers("nonexistent", "example.com")
 
 	if err == nil {
 		t.Error("ResolveGroupMembers() expected error for nonexistent group")

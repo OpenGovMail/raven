@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"net/url"
@@ -8,6 +9,7 @@ import (
 	"path/filepath"
 
 	"raven/internal/blobstorage"
+	"raven/internal/maildomain"
 
 	"gopkg.in/yaml.v2"
 )
@@ -21,7 +23,14 @@ type Config struct {
 	Logging     LoggingConfig      `yaml:"logging"`
 	BlobStorage blobstorage.Config `yaml:"blob_storage"`
 	IDPBaseURL  string             // IDP base URL (loaded from raven.yaml auth_server_url)
+	// MailDomains maps organization units to their mail domains (loaded from raven.yaml
+	// organization_unit_domains).
+	MailDomains *maildomain.Map `yaml:"-"`
 }
+
+// errInvalidMailDomains marks a raven.yaml whose organization_unit_domains is invalid. Unlike a
+// missing raven.yaml, that stops the service: it would address group mail wrongly.
+var errInvalidMailDomains = errors.New("invalid organization_unit_domains in raven.yaml")
 
 // LMTPConfig holds LMTP server configuration
 type LMTPConfig struct {
@@ -111,6 +120,9 @@ func LoadConfig(path string) (*Config, error) {
 
 	// Try to load raven.yaml to get IDP URL and domain
 	if err := loadMainConfig(cfg); err != nil {
+		if errors.Is(err, errInvalidMailDomains) {
+			return nil, err
+		}
 		// Log warning but don't fail - group resolution will just not work
 		log.Printf("Warning: failed to load main config for group resolution: %v", err)
 	}
@@ -123,7 +135,7 @@ func LoadConfig(path string) (*Config, error) {
 	return cfg, nil
 }
 
-// loadMainConfig loads raven.yaml to extract IDP URL
+// loadMainConfig loads raven.yaml to extract the IDP URL and the OU mail domains
 func loadMainConfig(cfg *Config) error {
 	ravenConfigPaths := []string{
 		"/etc/raven/raven.yaml",
@@ -133,7 +145,8 @@ func loadMainConfig(cfg *Config) error {
 	}
 
 	type MainConfig struct {
-		AuthServerURL string `yaml:"auth_server_url"`
+		AuthServerURL           string              `yaml:"auth_server_url"`
+		OrganizationUnitDomains map[string][]string `yaml:"organization_unit_domains"`
 	}
 
 	var ravenCfg MainConfig
@@ -154,6 +167,12 @@ func loadMainConfig(cfg *Config) error {
 	if err := yaml.Unmarshal(data, &ravenCfg); err != nil {
 		return fmt.Errorf("failed to parse raven.yaml: %w", err)
 	}
+
+	mailDomains, err := maildomain.NewMap(ravenCfg.OrganizationUnitDomains)
+	if err != nil {
+		return fmt.Errorf("%w: %w", errInvalidMailDomains, err)
+	}
+	cfg.MailDomains = mailDomains
 
 	// Extract base URL from auth server URL
 	// Strip path like /auth/credentials/authenticate to get base URL

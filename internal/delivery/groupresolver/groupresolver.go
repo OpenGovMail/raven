@@ -8,7 +8,6 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -31,6 +30,7 @@ type AssertionCache struct {
 // GroupResolver handles group resolution from IDP
 type GroupResolver struct {
 	baseURL        string
+	mailDomains    *maildomain.Map
 	assertionCache *AssertionCache
 	mu             sync.RWMutex
 	httpClient     *http.Client
@@ -39,18 +39,22 @@ type GroupResolver struct {
 // NewGroupResolver creates a new GroupResolver.
 //
 // It takes no credentials: raven authenticates to Thunder as a service account, configured
-// through the environment. See the idp package.
-func NewGroupResolver(baseURL string) *GroupResolver {
+// through the environment. See the idp package. mailDomains gives the domains of the members'
+// organization units.
+func NewGroupResolver(baseURL string, mailDomains *maildomain.Map) *GroupResolver {
 	return &GroupResolver{
-		baseURL:    baseURL,
-		httpClient: buildHTTPClient(),
+		baseURL:     baseURL,
+		mailDomains: mailDomains,
+		httpClient:  buildHTTPClient(),
 	}
 }
 
 // ResolveGroupMembers resolves all members of a group (recursively) and returns their email addresses.
-// groupName should be the portion before "-group@", e.g. "engineering" from "engineering-group@domain.com".
+// groupName should be the portion before "-group@", e.g. "engineering" from "engineering-group@domain.com",
+// and groupDomain the part after the "@". A member whose organization unit owns several domains
+// is addressed at groupDomain.
 // Returns slice of resolved email addresses, deduplicated
-func (gr *GroupResolver) ResolveGroupMembers(groupName string) ([]string, error) {
+func (gr *GroupResolver) ResolveGroupMembers(groupName, groupDomain string) ([]string, error) {
 	// Get system assertion
 	assertion, err := gr.getOrFreshAssertion()
 	if err != nil {
@@ -83,7 +87,7 @@ func (gr *GroupResolver) ResolveGroupMembers(groupName string) ([]string, error)
 		for _, member := range members {
 			if member.Type == "user" {
 				// Resolve user to email address
-				email, err := gr.resolveUserEmail(assertion, member.ID)
+				email, err := gr.resolveUserEmail(assertion, member.ID, groupDomain)
 				if err != nil {
 					log.Printf("GroupResolver: failed to resolve user %s: %v, skipping", member.ID, err)
 					continue
@@ -200,8 +204,9 @@ func (gr *GroupResolver) fetchGroupMembers(assertion, groupID string) ([]Member,
 }
 
 // resolveUserEmail resolves a user member id to an email address.
-// It fetches the user profile, extracts username, and derives domain from organization unit.
-func (gr *GroupResolver) resolveUserEmail(assertion, userID string) (string, error) {
+// It fetches the user profile, extracts username, and takes the domain from the configured
+// domains of the user's organization unit, preferring preferredDomain.
+func (gr *GroupResolver) resolveUserEmail(assertion, userID, preferredDomain string) (string, error) {
 	user, err := gr.fetchUserByID(assertion, userID)
 	if err != nil {
 		return "", err
@@ -226,13 +231,9 @@ func (gr *GroupResolver) resolveUserEmail(assertion, userID string) (string, err
 		return "", fmt.Errorf("unable to resolve domain for user %s: missing organization unit", userID)
 	}
 
-	domain, err := gr.resolveOrganizationUnitDomain(assertion, user.OrganizationUnit)
+	domain, err := gr.mailDomains.DomainFor(user.OrganizationUnit, preferredDomain)
 	if err != nil {
-		return "", fmt.Errorf("failed to resolve domain from org unit for user %s: %w", userID, err)
-	}
-
-	if domain == "" {
-		return "", fmt.Errorf("unable to resolve domain for user %s", userID)
+		return "", fmt.Errorf("unable to resolve domain for user %s: %w", userID, err)
 	}
 
 	return username + "@" + domain, nil
@@ -290,24 +291,6 @@ func (gr *GroupResolver) fetchUserByID(assertion, userID string) (*userRecord, e
 		Username:         username,
 		OrganizationUnit: orgUnit,
 	}, nil
-}
-
-// resolveOrganizationUnitDomain returns the mail domain of an OU, which is its handle. The OU's
-// parents play no part.
-func (gr *GroupResolver) resolveOrganizationUnitDomain(assertion, orgUnitID string) (string, error) {
-	var ou struct {
-		Handle string `json:"handle"`
-	}
-	if err := gr.getJSON(gr.baseURL+"/organization-units/"+url.PathEscape(strings.TrimSpace(orgUnitID)), assertion, &ou); err != nil {
-		return "", err
-	}
-
-	domain, ok := maildomain.FromHandle(ou.Handle)
-	if !ok {
-		return "", fmt.Errorf("OU %s has handle %q, which is not a mail domain", orgUnitID, ou.Handle)
-	}
-
-	return domain, nil
 }
 
 func firstNonEmpty(values ...string) string {
