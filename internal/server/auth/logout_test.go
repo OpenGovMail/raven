@@ -14,7 +14,7 @@ func TestLogoutCommand_Unauthenticated(t *testing.T) {
 	srv := server.SetupTestServerSimple(t)
 	conn := server.NewMockConn()
 
-	srv.HandleLogout(conn, "L001")
+	srv.HandleLogout(conn, "L001", []string{"L001", "LOGOUT"})
 
 	response := conn.GetWrittenData()
 	lines := strings.Split(strings.TrimSpace(response), "\r\n")
@@ -36,12 +36,53 @@ func TestLogoutCommand_Unauthenticated(t *testing.T) {
 	}
 }
 
+// TestLogoutCommand_RejectsArguments tests LOGOUT with extra arguments
+func TestLogoutCommand_RejectsArguments(t *testing.T) {
+	srv := server.SetupTestServerSimple(t)
+	conn := server.NewMockConn()
+
+	loggedOut := srv.HandleLogout(conn, "A1", []string{"A1", "LOGOUT", "extra"})
+	if loggedOut {
+		t.Error("HandleLogout should return false when extra arguments are provided")
+	}
+
+	response := conn.GetWrittenData()
+	if !strings.Contains(response, "A1 BAD LOGOUT takes no arguments") {
+		t.Errorf("Expected BAD response for extra arguments, got: %s", response)
+	}
+	if strings.Contains(response, "* BYE") {
+		t.Errorf("LOGOUT with extra arguments must not send BYE, got: %s", response)
+	}
+	if strings.Contains(response, "OK LOGOUT completed") {
+		t.Errorf("LOGOUT with extra arguments should not complete OK, got: %s", response)
+	}
+	if response != "A1 BAD LOGOUT takes no arguments\r\n" {
+		t.Errorf("Expected only the exact BAD reply, got: %q", response)
+	}
+}
+
+// TestLogoutCommand_RejectsMultipleArguments tests LOGOUT with multiple extra arguments
+func TestLogoutCommand_RejectsMultipleArguments(t *testing.T) {
+	srv := server.SetupTestServerSimple(t)
+	conn := server.NewMockConn()
+
+	loggedOut := srv.HandleLogout(conn, "A2", []string{"A2", "LOGOUT", "foo", "bar"})
+	if loggedOut {
+		t.Error("HandleLogout should return false when extra arguments are provided")
+	}
+
+	response := conn.GetWrittenData()
+	if response != "A2 BAD LOGOUT takes no arguments\r\n" {
+		t.Errorf("Expected exact BAD reply for multiple arguments, got: %q", response)
+	}
+}
+
 // TestLogoutCommand_Authenticated tests LOGOUT after successful authentication
 func TestLogoutCommand_Authenticated(t *testing.T) {
 	srv := server.SetupTestServerSimple(t)
 	conn := server.NewMockConn()
 
-	srv.HandleLogout(conn, "A023")
+	srv.HandleLogout(conn, "A023", []string{"A023", "LOGOUT"})
 
 	response := conn.GetWrittenData()
 	lines := strings.Split(strings.TrimSpace(response), "\r\n")
@@ -80,7 +121,7 @@ func TestLogoutCommand_WithSelectedFolder(t *testing.T) {
 		SelectedFolder: "INBOX",
 	}
 
-	srv.HandleLogout(conn, "L003")
+	srv.HandleLogout(conn, "L003", []string{"L003", "LOGOUT"})
 
 	response := conn.GetWrittenData()
 	lines := strings.Split(strings.TrimSpace(response), "\r\n")
@@ -106,7 +147,7 @@ func TestLogoutCommand_ResponseOrder(t *testing.T) {
 	srv := server.SetupTestServerSimple(t)
 	conn := server.NewMockConn()
 
-	srv.HandleLogout(conn, "L004")
+	srv.HandleLogout(conn, "L004", []string{"L004", "LOGOUT"})
 
 	response := conn.GetWrittenData()
 	lines := strings.Split(strings.TrimSpace(response), "\r\n")
@@ -157,7 +198,7 @@ func TestLogoutCommand_MultipleSequentialLogouts(t *testing.T) {
 
 	for _, tc := range testCases {
 		conn := server.NewMockConn()
-		srv.HandleLogout(conn, tc.tag)
+		srv.HandleLogout(conn, tc.tag, []string{tc.tag, "LOGOUT"})
 
 		response := conn.GetWrittenData()
 		lines := strings.Split(strings.TrimSpace(response), "\r\n")
@@ -183,7 +224,7 @@ func TestLogoutCommand_AlwaysSucceeds(t *testing.T) {
 	srv := server.SetupTestServerSimple(t)
 	conn := server.NewMockConn()
 
-	srv.HandleLogout(conn, "L005")
+	srv.HandleLogout(conn, "L005", []string{"L005", "LOGOUT"})
 
 	response := conn.GetWrittenData()
 
@@ -208,7 +249,7 @@ func TestLogoutCommand_NoArguments(t *testing.T) {
 	conn := server.NewMockConn()
 
 	// LOGOUT takes no arguments, just tag
-	srv.HandleLogout(conn, "L006")
+	srv.HandleLogout(conn, "L006", []string{"L006", "LOGOUT"})
 
 	response := conn.GetWrittenData()
 	lines := strings.Split(strings.TrimSpace(response), "\r\n")
@@ -246,7 +287,7 @@ func TestLogoutCommand_TagFormat(t *testing.T) {
 			srv := server.SetupTestServerSimple(t)
 			conn := server.NewMockConn()
 
-			srv.HandleLogout(conn, tc.tag)
+			srv.HandleLogout(conn, tc.tag, []string{tc.tag, "LOGOUT"})
 
 			response := conn.GetWrittenData()
 			lines := strings.Split(strings.TrimSpace(response), "\r\n")
@@ -269,7 +310,7 @@ func TestLogoutCommand_MessageContent(t *testing.T) {
 	srv := server.SetupTestServerSimple(t)
 	conn := server.NewMockConn()
 
-	srv.HandleLogout(conn, "L007")
+	srv.HandleLogout(conn, "L007", []string{"L007", "LOGOUT"})
 
 	response := conn.GetWrittenData()
 	lines := strings.Split(strings.TrimSpace(response), "\r\n")

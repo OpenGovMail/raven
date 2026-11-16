@@ -432,9 +432,16 @@ func HandleStartTLS(deps ServerDeps, clientHandler ClientHandler, conn net.Conn,
 
 // ===== LOGOUT =====
 
-func HandleLogout(deps ServerDeps, conn net.Conn, tag string) {
+func HandleLogout(deps ServerDeps, conn net.Conn, tag string, parts []string) bool {
+	// RFC 3501: LOGOUT takes no arguments.
+	if len(parts) > 2 {
+		deps.SendResponse(conn, fmt.Sprintf("%s BAD LOGOUT takes no arguments", tag))
+		return false
+	}
+
 	deps.SendResponse(conn, "* BYE IMAP4rev1 Server logging out")
 	deps.SendResponse(conn, fmt.Sprintf("%s OK LOGOUT completed", tag))
+	return true
 }
 
 // ===== AUTHENTICATE USER (Shared Auth Logic) =====
