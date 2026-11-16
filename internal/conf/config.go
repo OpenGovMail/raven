@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"raven/internal/blobstorage"
+	"raven/internal/maildomain"
 
 	"gopkg.in/yaml.v2"
 )
@@ -31,6 +32,11 @@ type Config struct {
 	OAuthSkewSec                      int                `yaml:"oauth_clock_skew_seconds"`
 	OAuthClientEmailAuthorizationFile string             `yaml:"oauth_client_email_authorization_file"`
 	BlobStorage                       blobstorage.Config `yaml:"blob_storage"`
+
+	// OrganizationUnitDomains maps an organization unit ID to the mail domains it owns.
+	OrganizationUnitDomains map[string][]string `yaml:"organization_unit_domains"`
+	// MailDomains is OrganizationUnitDomains, validated. LoadConfig fills it in.
+	MailDomains *maildomain.Map `yaml:"-"`
 }
 
 func LoadConfig() (*Config, error) {
@@ -62,6 +68,10 @@ func LoadConfig() (*Config, error) {
 
 	// Set defaults
 	cfg.SetDefaults()
+
+	if cfg.MailDomains, err = maildomain.NewMap(cfg.OrganizationUnitDomains); err != nil {
+		return nil, err
+	}
 
 	return &cfg, nil
 }

@@ -66,8 +66,8 @@ func initGroupResolver(cfg *config.Config) *groupresolver.GroupResolver {
 
 	// Credentials come from the environment via the idp package: raven authenticates to Thunder as
 	// a service account rather than as an administrator, so there is nothing to pass in here.
-	gr := groupresolver.NewGroupResolver(cfg.IDPBaseURL)
-	log.Printf("Initialized group resolver with IDP: %s", cfg.IDPBaseURL)
+	gr := groupresolver.NewGroupResolver(cfg.IDPBaseURL, cfg.MailDomains)
+	log.Printf("Initialized group resolver with IDP: %s (%d mail domains configured)", cfg.IDPBaseURL, cfg.MailDomains.Len())
 
 	return gr
 }

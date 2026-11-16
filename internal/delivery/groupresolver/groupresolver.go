@@ -8,7 +8,6 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -31,6 +30,7 @@ type AssertionCache struct {
 // GroupResolver handles group resolution from IDP
 type GroupResolver struct {
 	baseURL        string
+	mailDomains    *maildomain.Map
 	assertionCache *AssertionCache
 	mu             sync.RWMutex
 	httpClient     *http.Client
@@ -39,28 +39,38 @@ type GroupResolver struct {
 // NewGroupResolver creates a new GroupResolver.
 //
 // It takes no credentials: raven authenticates to Thunder as a service account, configured
-// through the environment. See the idp package.
-func NewGroupResolver(baseURL string) *GroupResolver {
+// through the environment. See the idp package. mailDomains gives the domains of the members'
+// organization units.
+func NewGroupResolver(baseURL string, mailDomains *maildomain.Map) *GroupResolver {
 	return &GroupResolver{
-		baseURL:    baseURL,
-		httpClient: buildHTTPClient(),
+		baseURL:     baseURL,
+		mailDomains: mailDomains,
+		httpClient:  buildHTTPClient(),
 	}
 }
 
 // ResolveGroupMembers resolves all members of a group (recursively) and returns their email addresses.
-// groupName should be the portion before "-group@", e.g. "engineering" from "engineering-group@domain.com".
+// groupName should be the portion before "-group@", e.g. "engineering" from "engineering-group@domain.com",
+// and groupDomain the part after the "@". The group must belong to the organization unit that
+// owns groupDomain. Each member is addressed at their own organization unit's primary domain,
+// whatever groupDomain is.
 // Returns slice of resolved email addresses, deduplicated
-func (gr *GroupResolver) ResolveGroupMembers(groupName string) ([]string, error) {
+func (gr *GroupResolver) ResolveGroupMembers(groupName, groupDomain string) ([]string, error) {
+	groupOU, ok := gr.mailDomains.OrgUnit(groupDomain)
+	if !ok {
+		return nil, fmt.Errorf("group domain %q is not in organization_unit_domains", groupDomain)
+	}
+
 	// Get system assertion
 	assertion, err := gr.getOrFreshAssertion()
 	if err != nil {
 		return nil, fmt.Errorf("failed to obtain assertion for group resolution: %w", err)
 	}
 
-	// Look up group ID by name
-	groupID, err := gr.lookupGroupIDByName(assertion, groupName)
+	// Look up the group by name within the organization unit that owns the group's domain
+	groupID, err := gr.lookupGroupID(assertion, groupName, groupOU)
 	if err != nil {
-		return nil, fmt.Errorf("failed to lookup group '%s': %w", groupName, err)
+		return nil, fmt.Errorf("failed to lookup group '%s' in organization unit %s: %w", groupName, groupOU, err)
 	}
 
 	// Resolve members recursively
@@ -159,11 +169,13 @@ func (gr *GroupResolver) fetchAssertion() (string, time.Time, error) {
 	return idp.SystemToken(gr.baseURL)
 }
 
-// lookupGroupIDByName looks up a group ID by its name
-func (gr *GroupResolver) lookupGroupIDByName(assertion, groupName string) (string, error) {
+// lookupGroupID returns the ID of the group named groupName in organization unit ouID. A group
+// with the same name in another organization unit doesn't match.
+func (gr *GroupResolver) lookupGroupID(assertion, groupName, ouID string) (string, error) {
 	type GroupResponse struct {
-		ID   string `json:"id"`
-		Name string `json:"name"`
+		ID                 string `json:"id"`
+		Name               string `json:"name"`
+		OrganizationUnitID string `json:"ouId"`
 	}
 
 	type GroupsListResponse struct {
@@ -176,12 +188,12 @@ func (gr *GroupResolver) lookupGroupIDByName(assertion, groupName string) (strin
 	}
 
 	for _, group := range result.Groups {
-		if group.Name == groupName {
+		if group.OrganizationUnitID == ouID && strings.EqualFold(group.Name, groupName) {
 			return group.ID, nil
 		}
 	}
 
-	return "", fmt.Errorf("group '%s' not found", groupName)
+	return "", fmt.Errorf("group '%s' not found in organization unit %s", groupName, ouID)
 }
 
 // fetchGroupMembers fetches the members of a group
@@ -200,7 +212,8 @@ func (gr *GroupResolver) fetchGroupMembers(assertion, groupID string) ([]Member,
 }
 
 // resolveUserEmail resolves a user member id to an email address.
-// It fetches the user profile, extracts username, and derives domain from organization unit.
+// It fetches the user profile, extracts username, and takes the domain from the user's own
+// organization unit: the first domain listed for it in organization_unit_domains.
 func (gr *GroupResolver) resolveUserEmail(assertion, userID string) (string, error) {
 	user, err := gr.fetchUserByID(assertion, userID)
 	if err != nil {
@@ -226,13 +239,9 @@ func (gr *GroupResolver) resolveUserEmail(assertion, userID string) (string, err
 		return "", fmt.Errorf("unable to resolve domain for user %s: missing organization unit", userID)
 	}
 
-	domain, err := gr.resolveOrganizationUnitDomain(assertion, user.OrganizationUnit)
-	if err != nil {
-		return "", fmt.Errorf("failed to resolve domain from org unit for user %s: %w", userID, err)
-	}
-
-	if domain == "" {
-		return "", fmt.Errorf("unable to resolve domain for user %s", userID)
+	domain, ok := gr.mailDomains.PrimaryDomain(user.OrganizationUnit)
+	if !ok {
+		return "", fmt.Errorf("unable to resolve domain for user %s: organization unit %s is not in organization_unit_domains", userID, user.OrganizationUnit)
 	}
 
 	return username + "@" + domain, nil
@@ -290,24 +299,6 @@ func (gr *GroupResolver) fetchUserByID(assertion, userID string) (*userRecord, e
 		Username:         username,
 		OrganizationUnit: orgUnit,
 	}, nil
-}
-
-// resolveOrganizationUnitDomain returns the mail domain of an OU, which is its handle. The OU's
-// parents play no part.
-func (gr *GroupResolver) resolveOrganizationUnitDomain(assertion, orgUnitID string) (string, error) {
-	var ou struct {
-		Handle string `json:"handle"`
-	}
-	if err := gr.getJSON(gr.baseURL+"/organization-units/"+url.PathEscape(strings.TrimSpace(orgUnitID)), assertion, &ou); err != nil {
-		return "", err
-	}
-
-	domain, ok := maildomain.FromHandle(ou.Handle)
-	if !ok {
-		return "", fmt.Errorf("OU %s has handle %q, which is not a mail domain", orgUnitID, ou.Handle)
-	}
-
-	return domain, nil
 }
 
 func firstNonEmpty(values ...string) string {

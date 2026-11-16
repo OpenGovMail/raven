@@ -37,7 +37,7 @@ func ValidateRoleAddress(email, host, port string, tokenRefreshSeconds int) (boo
 		return false, "", err
 	}
 
-	ouID, err := GetOrgUnitIDForDomain(domain, host, port, tokenRefreshSeconds)
+	ouID, err := GetOrgUnitIDForDomain(domain)
 	if err != nil {
 		log.Printf("      │ ⚠ Failed to get OU ID: %v", err)
 		return false, "", err

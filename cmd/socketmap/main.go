@@ -4,6 +4,7 @@ import (
 	"log"
 	"time"
 
+	"raven/internal/conf"
 	"raven/internal/socketmap/cache"
 	"raven/internal/socketmap/config"
 	"raven/internal/socketmap/server"
@@ -20,11 +21,22 @@ func main() {
 	// Load configuration
 	cfg := config.Load()
 
+	// The mail domains each organization unit owns come from raven.yaml. Without them every
+	// domain would answer NOTFOUND and mail would bounce, so a missing or invalid mapping
+	// stops the service instead.
+	ravenCfg, err := conf.LoadConfig()
+	if err != nil {
+		log.Fatalf("✗ Failed to load raven.yaml for organization_unit_domains: %v", err)
+	}
+	if ravenCfg.MailDomains.Len() == 0 {
+		log.Printf("⚠ organization_unit_domains is empty: every domain will answer NOTFOUND")
+	}
+	thunder.SetMailDomains(ravenCfg.MailDomains)
+
 	// Authenticate with Thunder at startup with retry logic
 	log.Println("┌─ Thunder Authentication ─────────")
 
 	var auth *thunder.Auth
-	var err error
 	maxRetries := 5
 	retryDelay := 2 * time.Second
 
@@ -74,38 +86,13 @@ func main() {
 	// Initialize cache
 	cacheManager := cache.New(cfg.CacheTTLSeconds)
 
-	// Build the domain index alongside startup, not before it: a slow walk must not keep the
-	// port closed. Lookups that arrive first wait for this build instead of starting another.
-	// After that it is rebuilt on a timer, so no lookup ever waits for a refresh. The wait
-	// starts when a walk ends, so a walk slower than the interval doesn't run back to back.
-	indexTTL := time.Duration(cfg.CacheTTLSeconds) * time.Second
-	if indexTTL <= 0 {
-		indexTTL = time.Minute // without a pause the walks would run back to back
-	}
-	// Relative to the interval, so it always allows several failed refreshes: an hour with
-	// the 5-minute default.
-	thunder.SetMaxIndexAge(12 * indexTTL)
-	go func() {
-		if err := thunder.WarmIndex(cfg.ThunderHost, cfg.ThunderPort, cfg.TokenRefreshSeconds); err != nil {
-			log.Printf("⚠ Initial domain index build failed: %v", err)
-			log.Printf("  Check that raven's service account can list organization units")
-			log.Printf("  Service will retry on first request")
-		}
-
-		for {
-			time.Sleep(indexTTL)
-			if err := thunder.RefreshIndex(cfg.ThunderHost, cfg.ThunderPort, cfg.TokenRefreshSeconds); err != nil {
-				log.Printf("⚠ Domain index refresh failed, serving the previous one: %v", err)
-			}
-		}
-	}()
-
 	// Display configuration
 	log.Printf("Starting socketmap service on %s:%s", cfg.Host, cfg.Port)
 	log.Printf("Configuration:")
 	log.Printf("  • Thunder Host: %s:%s", cfg.ThunderHost, cfg.ThunderPort)
 	log.Printf("  • Cache TTL: %d seconds", cfg.CacheTTLSeconds)
 	log.Printf("  • Token Refresh: %d seconds", cfg.TokenRefreshSeconds)
+	log.Printf("  • Mail domains: %d", ravenCfg.MailDomains.Len())
 	log.Println("")
 
 	// Create and start server

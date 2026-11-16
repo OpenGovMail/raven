@@ -3,6 +3,17 @@
 domain: "example.com"
 auth_server_url: "http://auth-service:8080"
 
+# Mail domains of each organization unit, keyed by OU ID.
+# - An OU can own several domains; a domain can belong to only one OU.
+# - List the main domain first: group mail addresses the OU's users at it.
+# - An OU that isn't listed owns no mail domain.
+# - Domains are matched case-insensitively and a trailing dot is ignored.
+# Read at startup by every service; an invalid mapping stops them from starting.
+organization_unit_domains:
+  "00000000-0000-0000-0000-000000000001":
+    - "example.com"
+    - "example.org"
+
 # OAUTHBEARER Token Validation (RFC 7628)
 # Required when enabling AUTH=OAUTHBEARER for IMAP/SASL.
 oauth_issuer_url: "https://idp.example.com"

@@ -4,45 +4,47 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"sync/atomic"
+
+	"raven/internal/maildomain"
 )
 
-// ErrNoSuchDomain means no OU has the domain as its handle: an answer, not a failed lookup.
-var ErrNoSuchDomain = errors.New("no OU has this handle")
+// ErrNoSuchDomain means no OU owns the domain: an answer, not a failed lookup.
+var ErrNoSuchDomain = errors.New("no organization unit owns this domain")
 
-// ValidateDomain checks if a domain is the handle of an OU in Thunder IDP
-func ValidateDomain(domain, host, port string, tokenRefreshSeconds int) (bool, error) {
-	log.Printf("      ┌─ Thunder Domain Validation ──")
+// mailDomains is the configured OU → domains mapping. Until SetMailDomains is called no
+// domain is known.
+var mailDomains atomic.Pointer[maildomain.Map]
+
+// SetMailDomains sets the mapping that says which OU owns each mail domain.
+func SetMailDomains(m *maildomain.Map) {
+	mailDomains.Store(m)
+}
+
+// ValidateDomain reports whether an OU owns domain.
+func ValidateDomain(domain string) bool {
+	log.Printf("      ┌─ Domain Validation ──────────")
 	log.Printf("      │ Domain: %s", domain)
 
-	ouID, found, err := lookupOrgUnit(domain, host, port, tokenRefreshSeconds)
-	if err != nil {
-		log.Printf("      │ ⚠ Domain index unavailable: %v", err)
-		log.Printf("      └──────────────────────────────")
-		return false, err
-	}
-
+	ouID, found := mailDomains.Load().OrgUnit(domain)
 	if !found {
-		log.Printf("      │ ✗ Domain not found in Thunder")
+		log.Printf("      │ ✗ Domain not in organization_unit_domains")
 		log.Printf("      └──────────────────────────────")
-		return false, nil
+		return false
 	}
 
-	log.Printf("      │ ✓ Domain found in Thunder")
+	log.Printf("      │ ✓ Domain found")
 	log.Printf("      │ OU ID: %s", ouID)
 	log.Printf("      └──────────────────────────────")
 
-	return true, nil
+	return true
 }
 
-// GetOrgUnitIDForDomain returns the ID of the OU whose handle is domain
-func GetOrgUnitIDForDomain(domain, host, port string, tokenRefreshSeconds int) (string, error) {
-	ouID, found, err := lookupOrgUnit(domain, host, port, tokenRefreshSeconds)
-	if err != nil {
-		return "", err
-	}
+// GetOrgUnitIDForDomain returns the ID of the OU that owns domain.
+func GetOrgUnitIDForDomain(domain string) (string, error) {
+	ouID, found := mailDomains.Load().OrgUnit(domain)
 	if !found {
 		return "", fmt.Errorf("%w: %s", ErrNoSuchDomain, domain)
 	}
-
 	return ouID, nil
 }

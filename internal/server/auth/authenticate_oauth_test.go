@@ -246,7 +246,88 @@ func TestAuthenticateOAuth_RejectsSASLUserEmailMismatch(t *testing.T) {
 	}
 }
 
-func mustWriteConfig(t *testing.T, rootDir, issuer, jwksURL string, audience []string) {
+// mustWriteConfig writes a raven.yaml under rootDir/config. extraYAML is appended as is.
+// TestAuthenticateOAuth_DomainFromOrgUnit builds the mailbox address from a token that carries
+// only a username and an OU, using the OU's configured domains.
+func TestAuthenticateOAuth_DomainFromOrgUnit(t *testing.T) {
+	priv, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("failed to generate rsa key: %v", err)
+	}
+
+	issuer := "https://issuer.example.com"
+	aud := "raven-imap"
+
+	jwkN, jwkE := rsaPublicJWK(t, &priv.PublicKey)
+	jwksServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"keys": []map[string]string{{"kty": "RSA", "kid": "kid-ou", "n": jwkN, "e": jwkE}},
+		})
+	}))
+	defer jwksServer.Close()
+
+	tests := []struct {
+		name      string
+		domains   string
+		saslUser  string
+		wantEmail string // empty when the login must fail
+	}{
+		{name: "single domain", domains: "[a.example.com]", saslUser: "user2@a.example.com", wantEmail: "user2@a.example.com"},
+		{name: "several domains, SASL user picks one", domains: "[a.example.com, b.example.com]", saslUser: "user2@B.example.com", wantEmail: "user2@b.example.com"},
+		{name: "several domains, SASL user picks none", domains: "[a.example.com, b.example.com]", saslUser: "user2@c.example.com"},
+		{name: "OU not mapped", domains: "", saslUser: "user2@a.example.com"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mapping := ""
+			if tt.domains != "" {
+				mapping = "organization_unit_domains:\n  ou-1: " + tt.domains + "\n"
+			}
+
+			tmpDir := t.TempDir()
+			mustWriteConfig(t, tmpDir, issuer, jwksServer.URL, []string{aud}, mapping)
+			restore := mustChdir(t, tmpDir)
+			defer restore()
+
+			s, cleanup := server.SetupTestServer(t)
+			defer cleanup()
+
+			token, err := signToken(priv, "kid-ou", jwt.MapClaims{
+				"iss":      issuer,
+				"aud":      []string{aud},
+				"exp":      time.Now().Add(2 * time.Minute).Unix(),
+				"username": "user2",
+				"ouId":     "ou-1",
+				"sub":      "subject-ou",
+			})
+			if err != nil {
+				t.Fatalf("failed to sign token: %v", err)
+			}
+
+			payload := fmt.Sprintf("user=%s\x01auth=Bearer %s\x01\x01", tt.saslUser, token)
+			encoded := base64.StdEncoding.EncodeToString([]byte(payload))
+
+			conn := server.NewMockTLSConn()
+			state := &models.ClientState{}
+
+			s.HandleAuthenticate(conn, "A906", []string{"A906", "AUTHENTICATE", "OAUTHBEARER", encoded}, state)
+
+			response := conn.GetWrittenData()
+			if tt.wantEmail == "" {
+				if !strings.Contains(response, "A906 NO [AUTHENTICATIONFAILED]") || state.Authenticated {
+					t.Fatalf("expected auth failure, got: %s", response)
+				}
+				return
+			}
+			if !strings.Contains(response, "A906 OK") || state.Email != tt.wantEmail {
+				t.Fatalf("expected login as %q, got email %q and response: %s", tt.wantEmail, state.Email, response)
+			}
+		})
+	}
+}
+
+func mustWriteConfig(t *testing.T, rootDir, issuer, jwksURL string, audience []string, extraYAML ...string) {
 	t.Helper()
 
 	configDir := filepath.Join(rootDir, "config")
@@ -264,6 +345,9 @@ func mustWriteConfig(t *testing.T, rootDir, issuer, jwksURL string, audience []s
 		b.WriteString(fmt.Sprintf("  - %q\n", a))
 	}
 	b.WriteString("oauth_clock_skew_seconds: 60\n")
+	for _, extra := range extraYAML {
+		b.WriteString(extra)
+	}
 
 	path := filepath.Join(configDir, "raven.yaml")
 	if err := os.WriteFile(path, []byte(b.String()), 0o644); err != nil {

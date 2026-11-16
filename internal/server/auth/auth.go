@@ -10,8 +10,8 @@ import (
 	"log"
 	"net"
 	"net/http"
-	"net/url"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
@@ -19,7 +19,6 @@ import (
 	"raven/internal/blobstorage"
 	"raven/internal/conf"
 	"raven/internal/idp"
-	"raven/internal/maildomain"
 	"raven/internal/models"
 )
 
@@ -324,20 +323,15 @@ func HandleAuthenticate(deps ServerDeps, reader *bufio.Reader, conn net.Conn, ta
 		identity := claims.Identity()
 		email := normalizeEmail(identity)
 		if email == "" && tokenUsername != "" && claims.OrganizationUnitID != "" {
-			if cfg.AuthServerURL == "" {
-				log.Printf("OAUTHBEARER: cannot resolve OU domain without auth_server_url")
-				deps.SendResponse(conn, fmt.Sprintf("%s NO [SERVERBUG] Configuration error", tag))
-				return
-			}
-
-			derivedDomain := resolveDomainFromOrganizationUnit(cfg.AuthServerURL, claims.OrganizationUnitID)
-			if derivedDomain == "" {
-				log.Printf("OAUTHBEARER: failed to resolve domain from ouId=%q for username=%q", claims.OrganizationUnitID, tokenUsername)
+			// An OU with several domains is told which one by the SASL user's domain.
+			derivedDomain, err := cfg.MailDomains.DomainFor(claims.OrganizationUnitID, emailDomain(saslUserEmail))
+			if err != nil {
+				log.Printf("OAUTHBEARER: failed to resolve domain for username=%q: %v", tokenUsername, err)
 				deps.SendResponse(conn, fmt.Sprintf("%s NO [AUTHENTICATIONFAILED] Authentication failed", tag))
 				return
 			}
 
-			email = tokenUsername + "@" + strings.Trim(strings.TrimSpace(derivedDomain), ".")
+			email = tokenUsername + "@" + derivedDomain
 			log.Printf("OAUTHBEARER: resolved mailbox email from token username/ouId email=%q", email)
 		}
 		if email == "" && tokenUsername != "" && cfg.Domain != "" {
@@ -537,30 +531,32 @@ func authenticateUser(deps ServerDeps, conn net.Conn, tag string, username strin
 
 		log.Printf("Accepting login for user: %q (type=%s)", username, authResp.Type)
 
-		parts := strings.SplitN(loginEmail, "@", 2)
-		loginDomain := strings.Trim(strings.TrimSpace(parts[1]), ".")
+		loginDomain := emailDomain(loginEmail)
 
-		expectedDomain := ""
+		// The login domain must be one the user's OU owns. A user whose OU owns no domain can
+		// still log in under the domain of an email-shaped IdP id.
+		var expectedDomains []string
 		if authResp.OrganizationUnit != "" {
-			derivedDomain := resolveDomainFromOrganizationUnit(cfg.AuthServerURL, authResp.OrganizationUnit)
-			expectedDomain = strings.Trim(strings.TrimSpace(derivedDomain), ".")
-		}
-
-		if expectedDomain == "" {
-			if idEmail := normalizeEmail(authResp.ID); idEmail != "" {
-				idParts := strings.SplitN(idEmail, "@", 2)
-				expectedDomain = strings.Trim(strings.TrimSpace(idParts[1]), ".")
+			expectedDomains = cfg.MailDomains.Domains(authResp.OrganizationUnit)
+			if len(expectedDomains) == 0 {
+				log.Printf("LOGIN: organization unit %q has no entry in organization_unit_domains", authResp.OrganizationUnit)
 			}
 		}
 
-		if expectedDomain == "" {
+		if len(expectedDomains) == 0 {
+			if idDomain := emailDomain(normalizeEmail(authResp.ID)); idDomain != "" {
+				expectedDomains = []string{idDomain}
+			}
+		}
+
+		if len(expectedDomains) == 0 {
 			log.Printf("LOGIN: unable to resolve expected IdP domain for login %q", loginEmail)
 			deps.SendResponse(conn, fmt.Sprintf("%s NO [AUTHENTICATIONFAILED] Authentication failed", tag))
 			return
 		}
 
-		if !strings.EqualFold(loginDomain, expectedDomain) {
-			log.Printf("LOGIN: login domain %q does not match OU-derived domain %q for user %q", loginDomain, expectedDomain, loginEmail)
+		if !slices.Contains(expectedDomains, loginDomain) {
+			log.Printf("LOGIN: login domain %q is not one of the user's domains %v for user %q", loginDomain, expectedDomains, loginEmail)
 			deps.SendResponse(conn, fmt.Sprintf("%s NO [AUTHENTICATIONFAILED] Authentication failed", tag))
 			return
 		}
@@ -640,78 +636,12 @@ func normalizeEmail(value string) string {
 	return local + "@" + domain
 }
 
-func resolveDomainFromOrganizationUnit(authServerURL, orgUnitID string) string {
-	baseURL, err := extractBaseURL(authServerURL)
-	if err != nil {
-		log.Printf("LOGIN: failed to parse auth server URL for OU domain resolution: %v", err)
-		return ""
+// emailDomain returns the domain of an address normalizeEmail produced, or "".
+func emailDomain(email string) string {
+	if _, domain, ok := strings.Cut(email, "@"); ok {
+		return domain
 	}
-
-	log.Printf("LOGIN: resolving OU domain for org unit %s using bearer assertion", orgUnitID)
-
-	// Only a system token can read organization units. There is no user-credentials fallback:
-	// a token obtained by authenticating an end user carries no permissions and Thunder answers
-	// 403 Forbidden on these endpoints.
-	assertion := fetchSystemAssertion(baseURL)
-	if assertion == "" {
-		log.Printf("LOGIN: failed to obtain system token for OU domain resolution")
-		return ""
-	}
-
-	domain, err := resolveOrganizationUnitDomain(baseURL, orgUnitID, assertion)
-	if err != nil {
-		log.Printf("LOGIN: failed to resolve OU domain for %s: %v", orgUnitID, err)
-		return ""
-	}
-
-	log.Printf("LOGIN: resolved OU domain for %s as %s", orgUnitID, domain)
-
-	return domain
-}
-
-func extractBaseURL(rawURL string) (string, error) {
-	parsed, err := url.Parse(rawURL)
-	if err != nil {
-		return "", err
-	}
-
-	if parsed.Scheme == "" || parsed.Host == "" {
-		return "", fmt.Errorf("invalid auth server URL: %s", rawURL)
-	}
-
-	return parsed.Scheme + "://" + parsed.Host, nil
-}
-
-// fetchSystemAssertion obtains a token that can read organization units, which raven needs to
-// map a mail domain onto its Thunder organization unit.
-func fetchSystemAssertion(baseURL string) string {
-	log.Printf("LOGIN: requesting system token for OU resolution using raven's service account")
-
-	token, _, err := idp.SystemToken(baseURL)
-	if err != nil {
-		log.Printf("LOGIN: failed to obtain system token: %v", err)
-		return ""
-	}
-
-	return token
-}
-
-// resolveOrganizationUnitDomain returns the mail domain of an OU, which is its handle. The OU's
-// parents play no part.
-func resolveOrganizationUnitDomain(baseURL, orgUnitID, assertion string) (string, error) {
-	var ou struct {
-		Handle string `json:"handle"`
-	}
-	if err := getJSON(baseURL+"/organization-units/"+url.PathEscape(strings.TrimSpace(orgUnitID)), assertion, &ou); err != nil {
-		return "", err
-	}
-
-	domain, ok := maildomain.FromHandle(ou.Handle)
-	if !ok {
-		return "", fmt.Errorf("OU %s has handle %q, which is not a mail domain", orgUnitID, ou.Handle)
-	}
-
-	return domain, nil
+	return ""
 }
 
 func postJSON(endpoint string, payload any, assertion string, out any) error {
@@ -742,29 +672,6 @@ func postJSON(endpoint string, payload any, assertion string, out any) error {
 
 	if out == nil {
 		return nil
-	}
-
-	return json.NewDecoder(resp.Body).Decode(out)
-}
-
-func getJSON(endpoint, assertion string, out any) error {
-	req, err := http.NewRequest("GET", endpoint, nil)
-	if err != nil {
-		return err
-	}
-	if assertion != "" {
-		req.Header.Set("Authorization", "Bearer "+assertion)
-	}
-
-	resp, err := buildAuthHTTPClient().Do(req)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		respBody, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(respBody)))
 	}
 
 	return json.NewDecoder(resp.Body).Decode(out)
