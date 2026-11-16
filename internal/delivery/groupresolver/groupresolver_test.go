@@ -126,9 +126,17 @@ func TestGroupMemberResolution(t *testing.T) {
 				return
 			}
 			resp := map[string]interface{}{
+				// Two OUs each have a group called "engineering".
 				"groups": []map[string]string{
-					{"id": "group-eng", "name": "engineering"},
+					{"id": "group-eng-net", "name": "engineering", "ouId": "ou-2"},
+					{"id": "group-eng", "name": "Engineering", "ouId": "ou-1"},
 				},
+			}
+			_ = writeResponseJSON(w, resp)
+
+		case "/groups/group-eng-net/members":
+			resp := map[string]interface{}{
+				"members": []map[string]string{{"id": "user-1", "type": "user"}},
 			}
 			_ = writeResponseJSON(w, resp)
 
@@ -198,24 +206,42 @@ func TestGroupMemberResolution(t *testing.T) {
 		name        string
 		groupDomain string
 		want        []string
+		wantErr     string
 	}{
 		{
-			// carol's OU owns the group's domain, so she is addressed there.
-			name:        "group domain owned by a multi-domain OU",
-			groupDomain: "lsf.lk",
-			want:        []string{"alice@example.com", "bob@example.net", "carol@lsf.lk"},
+			// Members keep their own OU's domain, whatever the group's domain. carol's OU
+			// owns several domains, so she gets the first one listed.
+			name:        "members addressed at their own OU's domain",
+			groupDomain: "example.com",
+			want:        []string{"alice@example.com", "bob@example.net", "carol@silver.lsf.lk"},
 		},
 		{
-			// carol's OU owns several domains and not the group's, so she can't be addressed.
-			name:        "group domain not owned by a multi-domain OU",
-			groupDomain: "example.com",
-			want:        []string{"alice@example.com", "bob@example.net"},
+			// The group is the one in the OU that owns example.net, not ou-1's group.
+			name:        "group taken from the OU that owns the group domain",
+			groupDomain: "example.net",
+			want:        []string{"alice@example.com"},
+		},
+		{
+			name:        "no group of that name in the OU that owns the group domain",
+			groupDomain: "lsf.lk",
+			wantErr:     "not found in organization unit ou-silver",
+		},
+		{
+			name:        "group domain not in the mapping",
+			groupDomain: "unknown.example",
+			wantErr:     "not in organization_unit_domains",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			members, err := gr.ResolveGroupMembers("engineering", tt.groupDomain)
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("ResolveGroupMembers() error = %v, want one containing %q", err, tt.wantErr)
+				}
+				return
+			}
 			if err != nil {
 				t.Fatalf("ResolveGroupMembers() error = %v", err)
 			}
@@ -257,8 +283,12 @@ func TestGroupNotFound(t *testing.T) {
 	}))
 	defer server.Close()
 
-	gr := NewGroupResolver(server.URL, nil)
-	_, err := gr.ResolveGroupMembers("nonexistent", "example.com")
+	mailDomains, err := maildomain.NewMap(map[string][]string{"ou-1": {"example.com"}})
+	if err != nil {
+		t.Fatalf("NewMap() error = %v", err)
+	}
+	gr := NewGroupResolver(server.URL, mailDomains)
+	_, err = gr.ResolveGroupMembers("nonexistent", "example.com")
 
 	if err == nil {
 		t.Error("ResolveGroupMembers() expected error for nonexistent group")

@@ -1052,7 +1052,7 @@ func TestGroupEmailDelivery(t *testing.T) {
 			})
 		case "/groups":
 			_ = writeJSON(w, map[string]any{
-				"groups": []map[string]string{{"id": "group-eng", "name": "engineering"}},
+				"groups": []map[string]string{{"id": "group-eng", "name": "engineering", "ouId": "ou-1"}},
 			})
 
 		case "/groups/group-eng/members":

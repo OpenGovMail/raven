@@ -80,6 +80,16 @@ func (m *Map) Domains(ouID string) []string {
 	return append([]string(nil), domains...)
 }
 
+// PrimaryDomain returns the first domain listed for the OU: the one to address its users by
+// when nothing else says which of its domains to use.
+func (m *Map) PrimaryDomain(ouID string) (string, bool) {
+	domains := m.Domains(ouID)
+	if len(domains) == 0 {
+		return "", false
+	}
+	return domains[0], true
+}
+
 // Owns reports whether the OU owns domain.
 func (m *Map) Owns(ouID, domain string) bool {
 	owner, ok := m.OrgUnit(domain)

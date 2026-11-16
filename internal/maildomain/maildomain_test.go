@@ -142,3 +142,16 @@ func TestDomainFor(t *testing.T) {
 		})
 	}
 }
+
+func TestPrimaryDomain(t *testing.T) {
+	m, err := NewMap(map[string][]string{"multi": {"B.example", "a.example"}})
+	if err != nil {
+		t.Fatalf("NewMap: %v", err)
+	}
+	if got, ok := m.PrimaryDomain("multi"); !ok || got != "b.example" {
+		t.Errorf("PrimaryDomain(multi) = (%q, %v), want (b.example, true)", got, ok)
+	}
+	if _, ok := m.PrimaryDomain("unmapped"); ok {
+		t.Error("PrimaryDomain(unmapped) found a domain")
+	}
+}

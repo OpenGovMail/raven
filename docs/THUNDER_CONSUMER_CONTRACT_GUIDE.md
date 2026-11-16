@@ -35,9 +35,12 @@ Out of scope:
 ### 2) LMTP delivery group resolver flow
 
 - Authenticates with Thunder via flow API using service credentials.
+- Finds the group by name in the OU that owns the group address's domain. A group with the
+  same name in another OU is not used.
 - Resolves groups recursively to members.
 - Resolves member users to email addresses: the username from the user API, the domain
-  from the user's OU in `organization_unit_domains`.
+  from the user's own OU in `organization_unit_domains`. Members can be in any OU, so a
+  group at one domain can deliver to users at other domains.
 
 ### 3) Thunderbird OAuth client flow
 
@@ -60,9 +63,9 @@ organization_unit_domains:
 - A domain can belong to only one OU. Raven refuses to start if two OUs list the same one.
 - An OU that isn't listed owns no mail domain.
 - An OU's handle, name and place in the tree play no part.
-- When an OU owns several domains, IMAP login accepts any of them, OAUTHBEARER uses the
-  domain of the SASL user, and group expansion uses the group address's domain. If that
-  domain isn't one of the OU's, the login fails or the member is skipped.
+- When an OU owns several domains, IMAP login accepts any of them and OAUTHBEARER uses the
+  domain of the SASL user; if that isn't one of the OU's, the login fails. Group expansion
+  addresses the OU's users at its first listed domain, so list the main domain first.
 
 Raven reads the mapping at startup, so a change needs a restart.
 
@@ -216,7 +219,8 @@ Response fields:
 | Field | Required | Notes |
 |---|---|---|
 | groups[].id | Yes | Used to fetch members |
-| groups[].name | Yes | Match by group name |
+| groups[].name | Yes | Match by group name, ignoring case |
+| groups[].ouId | Yes | Must be the OU that owns the group address's domain |
 
 Expected status: 200
 
