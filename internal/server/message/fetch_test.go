@@ -1,6 +1,7 @@
 package message_test
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 
@@ -771,5 +772,41 @@ func TestFetchCommand_MultipartAlternativeWithAttachment(t *testing.T) {
 	// Should have some response (either content or NIL)
 	if !strings.Contains(response, "BODY[1]") && !strings.Contains(response, "F301 OK") {
 		t.Errorf("Expected valid FETCH response, got: %s", response)
+	}
+}
+
+// TestFetchCommand_SequenceSetsAndLiterals covers the PR #299 review: an empty mailbox
+// completes with OK, malformed sets are BAD, and a HEADER.FIELDS literal no longer
+// overwrites an earlier one.
+func TestFetchCommand_SequenceSetsAndLiterals(t *testing.T) {
+	srv := server.SetupTestServerSimple(t)
+	database := server.GetDatabaseFromServer(srv)
+	userID := server.CreateTestUser(t, database, "testuser")
+	inboxID, _ := server.GetMailboxID(t, database, userID, "INBOX")
+	state := &models.ClientState{Authenticated: true, UserID: userID, Username: "testuser", SelectedMailboxID: inboxID}
+	fetch := func(seq, items string) string {
+		conn := server.NewMockConn()
+		srv.HandleFetch(conn, "F1", []string{"F1", "FETCH", seq, items}, state)
+		return conn.GetWrittenData()
+	}
+
+	if got := fetch("1:*", "FLAGS"); !strings.Contains(got, "F1 OK FETCH completed") {
+		t.Errorf("empty mailbox: want OK, got: %s", got)
+	}
+
+	server.InsertTestMail(t, database, "testuser", "Test Subject", "sender@test.com", "testuser@localhost", "INBOX")
+	for _, seq := range []string{"1,abc", "1:2,0", "1,", "abc"} {
+		if got := fetch(seq, "FLAGS"); !strings.Contains(got, "F1 BAD") {
+			t.Errorf("sequence %q: want BAD, got: %s", seq, got)
+		}
+	}
+
+	body := "Test message body" // InsertTestMail's fixed body
+	got := fetch("1", "(BODY.PEEK[1] BODY.PEEK[HEADER.FIELDS (Subject)])")
+	if !strings.Contains(got, "BODY[1] {"+strconv.Itoa(len(body))+"}\r\n"+body) {
+		t.Errorf("BODY[1] literal missing or cut, got: %s", got)
+	}
+	if !strings.Contains(strings.ToUpper(got), "BODY[HEADER.FIELDS (SUBJECT)] {") || !strings.Contains(got, "Subject: Test Subject") {
+		t.Errorf("HEADER.FIELDS literal missing, got: %s", got)
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"net"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -18,6 +19,8 @@ import (
 )
 
 // ===== FETCH =====
+
+var sequenceSetRe = regexp.MustCompile(`^(\*|[1-9][0-9]*)(:(\*|[1-9][0-9]*))?(,(\*|[1-9][0-9]*)(:(\*|[1-9][0-9]*))?)*$`)
 
 // HandleFetchForUIDs handles FETCH for a list of UIDs (used by UID FETCH command)
 func HandleFetchForUIDs(deps ServerDeps, conn net.Conn, tag string, uids []int, items string, state *models.ClientState) {
@@ -91,8 +94,44 @@ func HandleFetch(deps ServerDeps, conn net.Conn, tag string, parts []string, sta
 		items = strings.Trim(items, "()")
 	}
 
-	// Support sequence sets: single numbers, ranges (1:5, 1:*, *), and comma-separated
-	// combinations of both (1,3,5 / 1:3,7,9:*)
+	// Sequence sets: numbers, ranges (1:5, 1:*, *) and comma-separated lists of both.
+	if !sequenceSetRe.MatchString(sequence) {
+		deps.SendResponse(conn, fmt.Sprintf("%s BAD Invalid sequence set", tag))
+		return
+	}
+
+	// One query: a consistent view of the mailbox, not an OFFSET scan per message.
+	rows, err := targetDB.Query(`SELECT message_id, uid, flags FROM message_mailbox
+		WHERE mailbox_id = ? ORDER BY uid ASC`, state.SelectedMailboxID)
+	if err != nil {
+		deps.SendResponse(conn, fmt.Sprintf("%s NO Database error", tag))
+		return
+	}
+	type mailboxRow struct {
+		messageID, uid int64
+		flags          sql.NullString
+	}
+	var mailbox []mailboxRow
+	for rows.Next() {
+		var r mailboxRow
+		if err := rows.Scan(&r.messageID, &r.uid, &r.flags); err != nil {
+			_ = rows.Close()
+			deps.SendResponse(conn, fmt.Sprintf("%s NO Database error", tag))
+			return
+		}
+		mailbox = append(mailbox, r)
+	}
+	_ = rows.Close()
+	if err := rows.Err(); err != nil {
+		deps.SendResponse(conn, fmt.Sprintf("%s NO Database error", tag))
+		return
+	}
+
+	// An empty mailbox returns nothing; otherwise numbers past the end are BAD (RFC 3501).
+	if len(mailbox) == 0 {
+		deps.SendResponse(conn, fmt.Sprintf("%s OK FETCH completed", tag))
+		return
+	}
 	seqNums := utils.ParseSequenceSetWithDB(sequence, state.SelectedMailboxID, targetDB)
 	if len(seqNums) == 0 {
 		deps.SendResponse(conn, fmt.Sprintf("%s BAD Invalid sequence number", tag))
@@ -100,25 +139,11 @@ func HandleFetch(deps ServerDeps, conn net.Conn, tag string, parts []string, sta
 	}
 
 	for _, seqNum := range seqNums {
-		var messageID int64
-		var uid int64
-		var flagsStr sql.NullString
-		query := `SELECT mm.message_id, mm.uid, mm.flags
-		          FROM message_mailbox mm
-		          WHERE mm.mailbox_id = ?
-		          ORDER BY mm.uid ASC LIMIT 1 OFFSET ?`
-		err := targetDB.QueryRow(query, state.SelectedMailboxID, seqNum-1).Scan(&messageID, &uid, &flagsStr)
-		if err != nil {
-			continue
+		if seqNum > len(mailbox) {
+			continue // mailbox changed between the two reads
 		}
-
-		flags := ""
-		if flagsStr.Valid {
-			flags = flagsStr.String
-		}
-
-		// Process this message
-		processFetchForMessage(deps, conn, messageID, uid, seqNum, flags, items, state)
+		r := mailbox[seqNum-1]
+		processFetchForMessage(deps, conn, r.messageID, r.uid, seqNum, r.flags.String, items, state)
 	}
 
 	deps.SendResponse(conn, fmt.Sprintf("%s OK FETCH completed", tag))
