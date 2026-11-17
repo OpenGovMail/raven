@@ -132,16 +132,14 @@ func HandleFetch(deps ServerDeps, conn net.Conn, tag string, parts []string, sta
 		deps.SendResponse(conn, fmt.Sprintf("%s OK FETCH completed", tag))
 		return
 	}
-	seqNums := utils.ParseSequenceSetWithDB(sequence, state.SelectedMailboxID, targetDB)
+	// Resolve * and ranges against the rows already read, so both use the same view.
+	seqNums := utils.ParseSequenceSet(sequence, len(mailbox))
 	if len(seqNums) == 0 {
 		deps.SendResponse(conn, fmt.Sprintf("%s BAD Invalid sequence number", tag))
 		return
 	}
 
 	for _, seqNum := range seqNums {
-		if seqNum > len(mailbox) {
-			continue // mailbox changed between the two reads
-		}
 		r := mailbox[seqNum-1]
 		processFetchForMessage(deps, conn, r.messageID, r.uid, seqNum, r.flags.String, items, state)
 	}

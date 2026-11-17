@@ -2,6 +2,7 @@ package utils
 
 import (
 	"database/sql"
+	"fmt"
 	"testing"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -543,5 +544,26 @@ func TestParseUIDSequenceSetWithDB_MultipleSequences(t *testing.T) {
 
 	if len(result) != 2 {
 		t.Errorf("Expected 2 UIDs, got %d: %v", len(result), result)
+	}
+}
+
+func TestParseSequenceSet(t *testing.T) {
+	cases := []struct {
+		set   string
+		total int
+		want  []int
+	}{
+		{"*", 3, []int{3}},
+		{"1,3:*", 4, []int{1, 3, 4}},
+		{"2:5", 3, []int{2, 3}},
+		{"1:*", 0, nil},
+		{"1:2,2:3", 3, []int{1, 2, 3}},
+		{"3,1", 3, []int{1, 3}},
+	}
+	for _, c := range cases {
+		got := ParseSequenceSet(c.set, c.total)
+		if fmt.Sprint(got) != fmt.Sprint(c.want) {
+			t.Errorf("ParseSequenceSet(%q, %d) = %v, want %v", c.set, c.total, got, c.want)
+		}
 	}
 }
