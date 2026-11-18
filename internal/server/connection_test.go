@@ -79,3 +79,22 @@ func TestAuthenticateClosesTheConnectionOnAHalfSentReply(t *testing.T) {
 		t.Fatal("connection still open after a half-sent reply: the rest would be read as a command")
 	}
 }
+
+func TestLogoutWithArgumentsDoesNotCloseConnection(t *testing.T) {
+	s := &IMAPServer{}
+	conn := NewMockConn()
+	conn.AddReadData("A1 LOGOUT extra\r\nA2 LOGOUT\r\n")
+
+	handleClient(s, conn, &models.ClientState{})
+
+	response := conn.GetWrittenData()
+	if !strings.Contains(response, "A1 BAD LOGOUT takes no arguments\r\n") {
+		t.Fatalf("expected A1 BAD response, got: %s", response)
+	}
+	if !strings.Contains(response, "* BYE IMAP4rev1 Server logging out\r\n") {
+		t.Fatalf("expected BYE response on valid logout, got: %s", response)
+	}
+	if !strings.Contains(response, "A2 OK LOGOUT completed\r\n") {
+		t.Fatalf("expected A2 OK response, got: %s", response)
+	}
+}
