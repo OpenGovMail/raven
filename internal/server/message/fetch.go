@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"net"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -14,9 +15,12 @@ import (
 	"raven/internal/delivery/parser"
 	"raven/internal/models"
 	"raven/internal/server/response"
+	"raven/internal/server/utils"
 )
 
 // ===== FETCH =====
+
+var sequenceSetRe = regexp.MustCompile(`^(\*|[1-9][0-9]*)(:(\*|[1-9][0-9]*))?(,(\*|[1-9][0-9]*)(:(\*|[1-9][0-9]*))?)*$`)
 
 // HandleFetchForUIDs handles FETCH for a list of UIDs (used by UID FETCH command)
 func HandleFetchForUIDs(deps ServerDeps, conn net.Conn, tag string, uids []int, items string, state *models.ClientState) {
@@ -90,91 +94,64 @@ func HandleFetch(deps ServerDeps, conn net.Conn, tag string, parts []string, sta
 		items = strings.Trim(items, "()")
 	}
 
-	var rows *sql.Rows
-
-	// Support for sequence ranges (e.g., 1:2, 2:4, 1:*, *)
-	seqRange := strings.Split(sequence, ":")
-	var start, end int
-	var useRange bool
-
-	if len(seqRange) == 2 {
-		useRange = true
-		if seqRange[0] == "*" {
-			start = -1 // will handle below
-		} else {
-			start, err = strconv.Atoi(seqRange[0])
-			if err != nil || start < 1 {
-				deps.SendResponse(conn, fmt.Sprintf("%s BAD Invalid sequence number", tag))
-				return
-			}
-		}
-		if seqRange[1] == "*" {
-			// Get max count for end using new schema
-			end, _ = db.GetMessageCountPerUser(targetDB, state.SelectedMailboxID)
-		} else {
-			end, err = strconv.Atoi(seqRange[1])
-			if err != nil || end < 1 {
-				deps.SendResponse(conn, fmt.Sprintf("%s BAD Invalid sequence number", tag))
-				return
-			}
-		}
-		if start == -1 {
-			start = end
-		}
-		if end < start {
-			end = start
-		}
-		// Query message_mailbox for messages in selected mailbox using new schema
-		query := `SELECT mm.message_id, mm.uid, mm.flags
-		          FROM message_mailbox mm
-		          WHERE mm.mailbox_id = ?
-		          ORDER BY mm.uid ASC LIMIT ? OFFSET ?`
-		rows, err = targetDB.Query(query, state.SelectedMailboxID, end-start+1, start-1)
-	} else if sequence == "1:*" || sequence == "*" {
-		query := `SELECT mm.message_id, mm.uid, mm.flags
-		          FROM message_mailbox mm
-		          WHERE mm.mailbox_id = ?
-		          ORDER BY mm.uid ASC`
-		rows, err = targetDB.Query(query, state.SelectedMailboxID)
-	} else {
-		msgNum, parseErr := strconv.Atoi(sequence)
-		if parseErr != nil {
-			deps.SendResponse(conn, fmt.Sprintf("%s BAD Invalid sequence number", tag))
-			return
-		}
-		query := `SELECT mm.message_id, mm.uid, mm.flags
-		          FROM message_mailbox mm
-		          WHERE mm.mailbox_id = ?
-		          ORDER BY mm.uid ASC LIMIT 1 OFFSET ?`
-		rows, err = targetDB.Query(query, state.SelectedMailboxID, msgNum-1)
+	// Sequence sets: numbers, ranges (1:5, 1:*, *) and comma-separated lists of both.
+	if !sequenceSetRe.MatchString(sequence) {
+		deps.SendResponse(conn, fmt.Sprintf("%s BAD Invalid sequence set", tag))
+		return
 	}
 
+	// Without *, rows past the highest number are never used. -1 means no limit in SQLite.
+	limit := -1
+	if !strings.Contains(sequence, "*") {
+		limit = 0
+		for _, f := range strings.FieldsFunc(sequence, func(r rune) bool { return r == ',' || r == ':' }) {
+			n, _ := strconv.Atoi(f)
+			limit = max(limit, n)
+		}
+	}
+
+	// Read the mailbox once so every position comes from the same view.
+	rows, err := targetDB.Query(`SELECT message_id, uid, flags FROM message_mailbox
+		WHERE mailbox_id = ? ORDER BY uid ASC LIMIT ?`, state.SelectedMailboxID, limit)
 	if err != nil {
 		deps.SendResponse(conn, fmt.Sprintf("%s NO Database error", tag))
 		return
 	}
-	defer func() { _ = rows.Close() }()
-
-	seqNum := 1
-	if useRange {
-		seqNum = start
+	type mailboxRow struct {
+		messageID, uid int64
+		flags          sql.NullString
 	}
+	var mailbox []mailboxRow
 	for rows.Next() {
-		var messageID int64
-		var uid int64
-		var flagsStr sql.NullString
-		if err := rows.Scan(&messageID, &uid, &flagsStr); err != nil {
-			continue
+		var r mailboxRow
+		if err := rows.Scan(&r.messageID, &r.uid, &r.flags); err != nil {
+			_ = rows.Close()
+			deps.SendResponse(conn, fmt.Sprintf("%s NO Database error", tag))
+			return
 		}
+		mailbox = append(mailbox, r)
+	}
+	_ = rows.Close()
+	if err := rows.Err(); err != nil {
+		deps.SendResponse(conn, fmt.Sprintf("%s NO Database error", tag))
+		return
+	}
 
-		flags := ""
-		if flagsStr.Valid {
-			flags = flagsStr.String
-		}
+	// Nothing to fetch in an empty mailbox.
+	if len(mailbox) == 0 {
+		deps.SendResponse(conn, fmt.Sprintf("%s OK FETCH completed", tag))
+		return
+	}
+	// Resolve * and ranges against the rows already read, so both use the same view.
+	seqNums := utils.ParseSequenceSet(sequence, len(mailbox))
+	if len(seqNums) == 0 {
+		deps.SendResponse(conn, fmt.Sprintf("%s BAD Invalid sequence number", tag))
+		return
+	}
 
-		// Process this message
-		processFetchForMessage(deps, conn, messageID, uid, seqNum, flags, items, state)
-		seqNum++
+	for _, seqNum := range seqNums {
+		r := mailbox[seqNum-1]
+		processFetchForMessage(deps, conn, r.messageID, r.uid, seqNum, r.flags.String, items, state)
 	}
 
 	deps.SendResponse(conn, fmt.Sprintf("%s OK FETCH completed", tag))
@@ -209,7 +186,6 @@ func processFetchForMessage(deps ServerDeps, conn net.Conn, messageID, uid int64
 
 	itemsUpper := strings.ToUpper(items)
 	responseParts := []string{}
-	var literalData string // Store literal data separately
 
 	if strings.Contains(itemsUpper, "UID") {
 		responseParts = append(responseParts, fmt.Sprintf("UID %d", uid))
@@ -403,16 +379,12 @@ func processFetchForMessage(deps ServerDeps, conn net.Conn, messageID, uid int64
 					if payload == "" {
 						responseParts = append(responseParts, fmt.Sprintf("BODY[%s] NIL", sectionSpec))
 					} else {
-						if literalData != "" {
-							literalData += " "
-						}
 						// Include partial start position in response if this was a partial fetch
+						name := fmt.Sprintf("BODY[%s]", sectionSpec)
 						if partialStartPos >= 0 {
-							responseParts = append(responseParts, fmt.Sprintf("BODY[%s]<%d>", sectionSpec, partialStartPos))
-						} else {
-							responseParts = append(responseParts, fmt.Sprintf("BODY[%s]", sectionSpec))
+							name = fmt.Sprintf("BODY[%s]<%d>", sectionSpec, partialStartPos)
 						}
-						literalData += fmt.Sprintf("{%d}\r\n%s", len(payload), payload)
+						responseParts = append(responseParts, fmt.Sprintf("%s {%d}\r\n%s", name, len(payload), payload))
 					}
 				}
 			}
@@ -497,8 +469,7 @@ func processFetchForMessage(deps ServerDeps, conn net.Conn, messageID, uid int64
 		headersStr += "\r\n" // Final blank line
 		// Match the exact format the client requested
 		fieldList := strings.Join(requestedHeaders, " ")
-		responseParts = append(responseParts, fmt.Sprintf("BODY[HEADER.FIELDS (%s)]", fieldList))
-		literalData = fmt.Sprintf("{%d}\r\n%s", len(headersStr), headersStr)
+		responseParts = append(responseParts, fmt.Sprintf("BODY[HEADER.FIELDS (%s)] {%d}\r\n%s", fieldList, len(headersStr), headersStr))
 	}
 
 	// Handle BODY.PEEK[TEXT] or BODY[TEXT] - message body only (can be combined with other parts)
@@ -531,11 +502,7 @@ func processFetchForMessage(deps ServerDeps, conn net.Conn, messageID, uid int64
 			}
 		}
 
-		if literalData != "" {
-			literalData += " "
-		}
-		responseParts = append(responseParts, "BODY[TEXT]")
-		literalData += fmt.Sprintf("{%d}\r\n%s", len(body), body)
+		responseParts = append(responseParts, fmt.Sprintf("BODY[TEXT] {%d}\r\n%s", len(body), body))
 	}
 
 	// Handle BODY.PEEK[HEADER] or BODY[HEADER] - all headers (check it's not HEADER.FIELDS)
@@ -547,11 +514,7 @@ func processFetchForMessage(deps ServerDeps, conn net.Conn, messageID, uid int64
 		if headerEnd != -1 {
 			headers = msg[:headerEnd+2] // include last CRLF
 		}
-		if literalData != "" {
-			literalData += " "
-		}
-		responseParts = append(responseParts, "BODY[HEADER]")
-		literalData += fmt.Sprintf("{%d}\r\n%s", len(headers), headers)
+		responseParts = append(responseParts, fmt.Sprintf("BODY[HEADER] {%d}\r\n%s", len(headers), headers))
 	}
 
 	// Handle RFC822.HEADER - return only the header portion
@@ -562,11 +525,7 @@ func processFetchForMessage(deps ServerDeps, conn net.Conn, messageID, uid int64
 		if headerEnd != -1 {
 			headers = msg[:headerEnd+2] // include last CRLF
 		}
-		if literalData != "" {
-			literalData += " "
-		}
-		responseParts = append(responseParts, "RFC822.HEADER")
-		literalData += fmt.Sprintf("{%d}\r\n%s", len(headers), headers)
+		responseParts = append(responseParts, fmt.Sprintf("RFC822.HEADER {%d}\r\n%s", len(headers), headers))
 	}
 
 	// Handle RFC822.TEXT - body text only (excluding headers)
@@ -577,11 +536,7 @@ func processFetchForMessage(deps ServerDeps, conn net.Conn, messageID, uid int64
 		if headerEnd != -1 {
 			body = msg[headerEnd+4:] // skip the double CRLF
 		}
-		if literalData != "" {
-			literalData += " "
-		}
-		responseParts = append(responseParts, "RFC822.TEXT")
-		literalData += fmt.Sprintf("{%d}\r\n%s", len(body), body)
+		responseParts = append(responseParts, fmt.Sprintf("RFC822.TEXT {%d}\r\n%s", len(body), body))
 	}
 
 	// Handle BODY[] / BODY.PEEK[] / RFC822 / RFC822.PEEK - full message
@@ -590,20 +545,11 @@ func processFetchForMessage(deps ServerDeps, conn net.Conn, messageID, uid int64
 		(strings.Contains(itemsUpper, "RFC822") && !strings.Contains(itemsUpper, "RFC822.SIZE") &&
 			!strings.Contains(itemsUpper, "RFC822.HEADER") && !strings.Contains(itemsUpper, "RFC822.TEXT") && !strings.Contains(itemsUpper, "RFC822.PEEK")) {
 		msg := loadRawMsg()
-		if literalData != "" {
-			literalData += " "
-		}
-		responseParts = append(responseParts, "BODY[]")
-		literalData += fmt.Sprintf("{%d}\r\n%s", len(msg), msg)
+		responseParts = append(responseParts, fmt.Sprintf("BODY[] {%d}\r\n%s", len(msg), msg))
 	}
 
 	if len(responseParts) > 0 {
-		responseStr := fmt.Sprintf("* %d FETCH (%s", seqNum, strings.Join(responseParts, " "))
-		if literalData != "" {
-			responseStr += " " + literalData + ")"
-		} else {
-			responseStr += ")"
-		}
+		responseStr := fmt.Sprintf("* %d FETCH (%s)", seqNum, strings.Join(responseParts, " "))
 		deps.SendResponse(conn, responseStr)
 	} else {
 		deps.SendResponse(conn, fmt.Sprintf("* %d FETCH (FLAGS ())", seqNum))

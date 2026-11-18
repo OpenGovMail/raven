@@ -30,11 +30,17 @@ func ParseQuotedString(arg string) string {
 
 // ParseSequenceSetWithDB parses a sequence set and returns message sequence numbers
 func ParseSequenceSetWithDB(sequenceSet string, mailboxID int64, userDB *sql.DB) []int {
-	var sequences []int
-
-	// Get total message count
 	totalMessages, err := db.GetMessageCountPerUser(userDB, mailboxID)
-	if err != nil || totalMessages == 0 {
+	if err != nil {
+		return nil
+	}
+	return ParseSequenceSet(sequenceSet, totalMessages)
+}
+
+// ParseSequenceSet expands a sequence set against a mailbox of totalMessages messages.
+func ParseSequenceSet(sequenceSet string, totalMessages int) []int {
+	var sequences []int
+	if totalMessages == 0 {
 		return sequences
 	}
 

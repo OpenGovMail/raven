@@ -1,6 +1,7 @@
 package message_test
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 
@@ -393,6 +394,56 @@ func TestFetchCommand_SequenceRange(t *testing.T) {
 	}
 }
 
+// TestFetchCommand_CommaSequenceSet tests FETCH with a comma-separated sequence set
+func TestFetchCommand_CommaSequenceSet(t *testing.T) {
+	srv := server.SetupTestServerSimple(t)
+	conn := server.NewMockConn()
+	database := server.GetDatabaseFromServer(srv)
+
+	userID := server.CreateTestUser(t, database, "testuser")
+	server.InsertTestMail(t, database, "testuser", "Message 1", "sender@test.com", "testuser@localhost", "INBOX")
+	server.InsertTestMail(t, database, "testuser", "Message 2", "sender@test.com", "testuser@localhost", "INBOX")
+	server.InsertTestMail(t, database, "testuser", "Message 3", "sender@test.com", "testuser@localhost", "INBOX")
+	server.InsertTestMail(t, database, "testuser", "Message 4", "sender@test.com", "testuser@localhost", "INBOX")
+	server.InsertTestMail(t, database, "testuser", "Message 5", "sender@test.com", "testuser@localhost", "INBOX")
+
+	mailboxID, _ := server.GetMailboxID(t, database, userID, "INBOX")
+
+	state := &models.ClientState{
+		Authenticated:     true,
+		UserID:            userID,
+		Username:          "testuser",
+		SelectedMailboxID: mailboxID,
+	}
+
+	// Test comma-separated sequence set 1,3,5
+	srv.HandleFetch(conn, "F014", []string{"F014", "FETCH", "1,3,5", "FLAGS"}, state)
+
+	response := conn.GetWrittenData()
+
+	if strings.Contains(response, "BAD") {
+		t.Errorf("Expected comma-separated sequence set to be accepted, got: %s", response)
+	}
+	if !strings.Contains(response, "* 1 FETCH") {
+		t.Errorf("Expected message 1 in response, got: %s", response)
+	}
+	if !strings.Contains(response, "* 3 FETCH") {
+		t.Errorf("Expected message 3 in response, got: %s", response)
+	}
+	if !strings.Contains(response, "* 5 FETCH") {
+		t.Errorf("Expected message 5 in response, got: %s", response)
+	}
+	if strings.Contains(response, "* 2 FETCH") {
+		t.Errorf("Did not expect message 2 in response, got: %s", response)
+	}
+	if strings.Contains(response, "* 4 FETCH") {
+		t.Errorf("Did not expect message 4 in response, got: %s", response)
+	}
+	if !strings.Contains(response, "F014 OK FETCH completed") {
+		t.Errorf("Expected completion, got: %s", response)
+	}
+}
+
 // TestFetchCommand_MultipleItems tests FETCH with multiple items
 func TestFetchCommand_MultipleItems(t *testing.T) {
 	srv := server.SetupTestServerSimple(t)
@@ -721,5 +772,40 @@ func TestFetchCommand_MultipartAlternativeWithAttachment(t *testing.T) {
 	// Should have some response (either content or NIL)
 	if !strings.Contains(response, "BODY[1]") && !strings.Contains(response, "F301 OK") {
 		t.Errorf("Expected valid FETCH response, got: %s", response)
+	}
+}
+
+// TestFetchCommand_SequenceSetsAndLiterals checks that an empty mailbox is OK, malformed
+// sets are BAD, and HEADER.FIELDS keeps an earlier literal.
+func TestFetchCommand_SequenceSetsAndLiterals(t *testing.T) {
+	srv := server.SetupTestServerSimple(t)
+	database := server.GetDatabaseFromServer(srv)
+	userID := server.CreateTestUser(t, database, "testuser")
+	inboxID, _ := server.GetMailboxID(t, database, userID, "INBOX")
+	state := &models.ClientState{Authenticated: true, UserID: userID, Username: "testuser", SelectedMailboxID: inboxID}
+	fetch := func(seq, items string) string {
+		conn := server.NewMockConn()
+		srv.HandleFetch(conn, "F1", []string{"F1", "FETCH", seq, items}, state)
+		return conn.GetWrittenData()
+	}
+
+	if got := fetch("1:*", "FLAGS"); !strings.Contains(got, "F1 OK FETCH completed") {
+		t.Errorf("empty mailbox: want OK, got: %s", got)
+	}
+
+	server.InsertTestMail(t, database, "testuser", "Test Subject", "sender@test.com", "testuser@localhost", "INBOX")
+	for _, seq := range []string{"1,abc", "1:2,0", "1,", "abc"} {
+		if got := fetch(seq, "FLAGS"); !strings.Contains(got, "F1 BAD") {
+			t.Errorf("sequence %q: want BAD, got: %s", seq, got)
+		}
+	}
+
+	body := "Test message body" // InsertTestMail's fixed body
+	got := fetch("1", "(BODY.PEEK[1] BODY.PEEK[HEADER.FIELDS (Subject)])")
+	if !strings.Contains(got, "BODY[1] {"+strconv.Itoa(len(body))+"}\r\n"+body) {
+		t.Errorf("BODY[1] literal missing or cut, got: %s", got)
+	}
+	if !strings.Contains(strings.ToUpper(got), "BODY[HEADER.FIELDS (SUBJECT)] {") || !strings.Contains(got, "Subject: Test Subject") {
+		t.Errorf("HEADER.FIELDS literal missing, got: %s", got)
 	}
 }
