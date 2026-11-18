@@ -100,9 +100,19 @@ func HandleFetch(deps ServerDeps, conn net.Conn, tag string, parts []string, sta
 		return
 	}
 
-	// One query: a consistent view of the mailbox, not an OFFSET scan per message.
+	// Without *, rows past the highest number are never used. -1 means no limit in SQLite.
+	limit := -1
+	if !strings.Contains(sequence, "*") {
+		limit = 0
+		for _, f := range strings.FieldsFunc(sequence, func(r rune) bool { return r == ',' || r == ':' }) {
+			n, _ := strconv.Atoi(f)
+			limit = max(limit, n)
+		}
+	}
+
+	// Read the mailbox once so every position comes from the same view.
 	rows, err := targetDB.Query(`SELECT message_id, uid, flags FROM message_mailbox
-		WHERE mailbox_id = ? ORDER BY uid ASC`, state.SelectedMailboxID)
+		WHERE mailbox_id = ? ORDER BY uid ASC LIMIT ?`, state.SelectedMailboxID, limit)
 	if err != nil {
 		deps.SendResponse(conn, fmt.Sprintf("%s NO Database error", tag))
 		return
@@ -127,7 +137,7 @@ func HandleFetch(deps ServerDeps, conn net.Conn, tag string, parts []string, sta
 		return
 	}
 
-	// An empty mailbox returns nothing; otherwise numbers past the end are BAD (RFC 3501).
+	// Nothing to fetch in an empty mailbox.
 	if len(mailbox) == 0 {
 		deps.SendResponse(conn, fmt.Sprintf("%s OK FETCH completed", tag))
 		return

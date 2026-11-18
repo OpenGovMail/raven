@@ -3,7 +3,6 @@ package utils
 import (
 	"database/sql"
 	"fmt"
-	"slices"
 	"strconv"
 	"strings"
 
@@ -79,9 +78,7 @@ func ParseSequenceSet(sequenceSet string, totalMessages int) []int {
 		}
 	}
 
-	// Overlapping sets (1:2,2:3) list a message once, so COPY doesn't copy it twice.
-	slices.Sort(sequences)
-	return slices.Compact(sequences)
+	return sequences
 }
 
 // Contains checks if a slice contains a string

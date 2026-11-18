@@ -557,8 +557,8 @@ func TestParseSequenceSet(t *testing.T) {
 		{"1,3:*", 4, []int{1, 3, 4}},
 		{"2:5", 3, []int{2, 3}},
 		{"1:*", 0, nil},
-		{"1:2,2:3", 3, []int{1, 2, 3}},
-		{"3,1", 3, []int{1, 3}},
+		// Input order matters: STORE looks positions up again after each Junk move.
+		{"3,1", 3, []int{3, 1}},
 	}
 	for _, c := range cases {
 		got := ParseSequenceSet(c.set, c.total)

@@ -775,9 +775,8 @@ func TestFetchCommand_MultipartAlternativeWithAttachment(t *testing.T) {
 	}
 }
 
-// TestFetchCommand_SequenceSetsAndLiterals covers the PR #299 review: an empty mailbox
-// completes with OK, malformed sets are BAD, and a HEADER.FIELDS literal no longer
-// overwrites an earlier one.
+// TestFetchCommand_SequenceSetsAndLiterals checks that an empty mailbox is OK, malformed
+// sets are BAD, and HEADER.FIELDS keeps an earlier literal.
 func TestFetchCommand_SequenceSetsAndLiterals(t *testing.T) {
 	srv := server.SetupTestServerSimple(t)
 	database := server.GetDatabaseFromServer(srv)
