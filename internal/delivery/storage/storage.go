@@ -138,7 +138,7 @@ func (s *Storage) DeliverMessage(recipient string, msg *parser.Message, folder s
 		internalDate = time.Now()
 	}
 
-	err = db.AddMessageToMailboxPerUser(targetDB, messageID, mailboxID, "", internalDate)
+	err = db.AddMessageToMailboxPerUser(targetDB, messageID, mailboxID, `\Recent`, internalDate)
 	if err != nil {
 		return fmt.Errorf("failed to add message to mailbox: %w", err)
 	}
