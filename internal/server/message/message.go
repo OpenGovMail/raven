@@ -1686,7 +1686,13 @@ func HandleExpunge(deps ServerDeps, conn net.Conn, tag string, state *models.Cli
 
 // ===== CHECK =====
 
-func HandleCheck(deps ServerDeps, conn net.Conn, tag string, state *models.ClientState) {
+func HandleCheck(deps ServerDeps, conn net.Conn, tag string, parts []string, state *models.ClientState) {
+	// RFC 3501: CHECK takes no arguments.
+	if len(parts) > 2 {
+		deps.SendResponse(conn, fmt.Sprintf("%s BAD CHECK takes no arguments", tag))
+		return
+	}
+
 	// CHECK command requires authentication
 	if !state.Authenticated {
 		deps.SendResponse(conn, fmt.Sprintf("%s NO Please authenticate first", tag))

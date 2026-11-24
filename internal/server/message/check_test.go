@@ -17,7 +17,7 @@ func TestCheckCommand_Unauthenticated(t *testing.T) {
 		Authenticated: false,
 	}
 
-	srv.HandleCheck(conn, "C001", state)
+	srv.HandleCheck(conn, "C001", []string{"C001", "CHECK"}, state)
 
 	response := conn.GetWrittenData()
 	lines := strings.Split(strings.TrimSpace(response), "\r\n")
@@ -44,7 +44,7 @@ func TestCheckCommand_AuthenticatedNoMailbox(t *testing.T) {
 		SelectedMailboxID: 0, // No mailbox selected
 	}
 
-	srv.HandleCheck(conn, "C002", state)
+	srv.HandleCheck(conn, "C002", []string{"C002", "CHECK"}, state)
 
 	response := conn.GetWrittenData()
 	lines := strings.Split(strings.TrimSpace(response), "\r\n")
@@ -78,7 +78,7 @@ func TestCheckCommand_WithSelectedMailbox(t *testing.T) {
 	state.SelectedMailboxID = mailboxID
 	state.SelectedFolder = "INBOX"
 
-	srv.HandleCheck(conn, "C003", state)
+	srv.HandleCheck(conn, "C003", []string{"C003", "CHECK"}, state)
 
 	response := conn.GetWrittenData()
 	lines := strings.Split(strings.TrimSpace(response), "\r\n")
@@ -113,7 +113,7 @@ func TestCheckCommand_NoExistsResponse(t *testing.T) {
 	state.SelectedMailboxID = mailboxID
 	state.SelectedFolder = "INBOX"
 
-	srv.HandleCheck(conn, "C004", state)
+	srv.HandleCheck(conn, "C004", []string{"C004", "CHECK"}, state)
 
 	response := conn.GetWrittenData()
 
@@ -148,7 +148,7 @@ func TestCheckCommand_AlwaysSucceeds(t *testing.T) {
 	state.SelectedMailboxID = mailboxID
 	state.SelectedFolder = "INBOX"
 
-	srv.HandleCheck(conn, "T001", state)
+	srv.HandleCheck(conn, "T001", []string{"T001", "CHECK"}, state)
 
 	response := conn.GetWrittenData()
 
@@ -178,7 +178,7 @@ func TestCheckCommand_ResponseFormat(t *testing.T) {
 	state.SelectedMailboxID = mailboxID
 	state.SelectedFolder = "INBOX"
 
-	srv.HandleCheck(conn, "FORMAT", state)
+	srv.HandleCheck(conn, "FORMAT", []string{"FORMAT", "CHECK"}, state)
 
 	response := conn.GetWrittenData()
 
@@ -211,9 +211,9 @@ func TestCheckCommand_MultipleInvocations(t *testing.T) {
 	state.SelectedFolder = "INBOX"
 
 	// Call CHECK multiple times with different tags
-	srv.HandleCheck(conn, "M001", state)
-	srv.HandleCheck(conn, "M002", state)
-	srv.HandleCheck(conn, "M003", state)
+	srv.HandleCheck(conn, "M001", []string{"M001", "CHECK"}, state)
+	srv.HandleCheck(conn, "M002", []string{"M002", "CHECK"}, state)
+	srv.HandleCheck(conn, "M003", []string{"M003", "CHECK"}, state)
 
 	response := conn.GetWrittenData()
 
@@ -248,7 +248,7 @@ func TestCheckCommand_StateTracking(t *testing.T) {
 	initialCount := state.LastMessageCount
 	initialRecent := state.LastRecentCount
 
-	srv.HandleCheck(conn, "TRACK", state)
+	srv.HandleCheck(conn, "TRACK", []string{"TRACK", "CHECK"}, state)
 
 	// After CHECK, state should be updated with current mailbox state
 	// The actual values depend on database state, but state should be synchronized
@@ -292,7 +292,7 @@ func TestCheckCommand_TagHandling(t *testing.T) {
 			state.SelectedMailboxID = mailboxID
 			state.SelectedFolder = "INBOX"
 
-			srv.HandleCheck(conn, tc.tag, state)
+			srv.HandleCheck(conn, tc.tag, []string{tc.tag, "CHECK"}, state)
 
 			response := conn.GetWrittenData()
 			expectedOK := tc.expectedTag + " OK CHECK completed"
@@ -328,7 +328,7 @@ func TestCheckCommand_ConcurrentAccess(t *testing.T) {
 			state.SelectedMailboxID = mailboxID
 			state.SelectedFolder = "INBOX"
 
-			srv.HandleCheck(conn, "CONCURRENT", state)
+			srv.HandleCheck(conn, "CONCURRENT", []string{"CONCURRENT", "CHECK"}, state)
 
 			response := conn.GetWrittenData()
 			if !strings.Contains(response, "CONCURRENT OK CHECK completed") {
@@ -366,7 +366,7 @@ func TestCheckCommand_RFC3501Compliance(t *testing.T) {
 			SelectedMailboxID: 0,
 		}
 
-		srv.HandleCheck(conn, "RFC1", state)
+		srv.HandleCheck(conn, "RFC1", []string{"RFC1", "CHECK"}, state)
 
 		response := conn.GetWrittenData()
 		if !strings.Contains(response, "RFC1 NO") {
@@ -387,7 +387,7 @@ func TestCheckCommand_RFC3501Compliance(t *testing.T) {
 		state.SelectedMailboxID = mailboxID
 		state.SelectedFolder = "INBOX"
 
-		srv.HandleCheck(conn, "RFC2", state)
+		srv.HandleCheck(conn, "RFC2", []string{"RFC2", "CHECK"}, state)
 
 		response := conn.GetWrittenData()
 		if !strings.Contains(response, "RFC2 OK") {
@@ -410,7 +410,7 @@ func TestCheckCommand_RFC3501Compliance(t *testing.T) {
 
 		// Multiple CHECK calls should not generate EXISTS responses
 		for i := 0; i < 3; i++ {
-			srv.HandleCheck(conn, "RFC3", state)
+			srv.HandleCheck(conn, "RFC3", []string{"RFC3", "CHECK"}, state)
 		}
 
 		response := conn.GetWrittenData()
@@ -445,7 +445,7 @@ func TestCheckCommand_RFC3501Compliance(t *testing.T) {
 		state.LastMessageCount = 999
 		state.LastRecentCount = 999
 
-		srv.HandleCheck(conn, "RFC4", state)
+		srv.HandleCheck(conn, "RFC4", []string{"RFC4", "CHECK"}, state)
 
 		response := conn.GetWrittenData()
 		if !strings.Contains(response, "RFC4 OK") {
@@ -480,7 +480,7 @@ func TestCheckCommand_VsNoop(t *testing.T) {
 			Authenticated: true,
 			Username:      "testuser",
 		}
-		srv.HandleCheck(connCheck, "C001", stateCheck)
+		srv.HandleCheck(connCheck, "C001", []string{"C001", "CHECK"}, stateCheck)
 		checkResponse := connCheck.GetWrittenData()
 
 		// NOOP should succeed
@@ -510,7 +510,7 @@ func TestCheckCommand_VsNoop(t *testing.T) {
 
 		// CHECK should not send untagged responses
 		connCheck := server.NewMockConn()
-		srv.HandleCheck(connCheck, "C001", state)
+		srv.HandleCheck(connCheck, "C001", []string{"C001", "CHECK"}, state)
 		checkResponse := connCheck.GetWrittenData()
 
 		checkLines := strings.Split(strings.TrimSpace(checkResponse), "\r\n")
@@ -525,4 +525,44 @@ func TestCheckCommand_VsNoop(t *testing.T) {
 			}
 		}
 	})
+}
+
+// TestCheckCommand_RejectsArguments tests CHECK with extra arguments
+// Per RFC 3501 6.4.1, CHECK takes no arguments.
+func TestCheckCommand_RejectsArguments(t *testing.T) {
+	srv := server.SetupTestServerSimple(t)
+	conn := server.NewMockConn()
+	state := &models.ClientState{}
+
+	srv.HandleCheck(conn, "C005", []string{"C005", "CHECK", "extra"}, state)
+
+	response := conn.GetWrittenData()
+	if !strings.Contains(response, "C005 BAD CHECK takes no arguments") {
+		t.Errorf("Expected BAD response for extra arguments, got: %s", response)
+	}
+	if strings.Contains(response, "OK CHECK completed") {
+		t.Errorf("CHECK with extra arguments should not complete OK, got: %s", response)
+	}
+}
+
+// TestCheckCommand_RejectsArgumentsWithSelectedMailbox verifies argument validation runs before housekeeping.
+func TestCheckCommand_RejectsArgumentsWithSelectedMailbox(t *testing.T) {
+	srv := server.SetupTestServerSimple(t)
+
+	state := server.SetupAuthenticatedState(t, srv, "testuser")
+	database := server.GetDatabaseFromServer(srv)
+	mailboxID, err := server.GetMailboxID(t, database, state.UserID, "INBOX")
+	if err != nil {
+		t.Fatalf("Failed to get INBOX mailbox: %v", err)
+	}
+	state.SelectedMailboxID = mailboxID
+	state.SelectedFolder = "INBOX"
+
+	conn := server.NewMockConn()
+	srv.HandleCheck(conn, "C006", []string{"C006", "CHECK", "extra"}, state)
+
+	response := conn.GetWrittenData()
+	if response != "C006 BAD CHECK takes no arguments\r\n" {
+		t.Errorf("Expected only the exact BAD reply, got: %q", response)
+	}
 }

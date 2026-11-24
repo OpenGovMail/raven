@@ -86,8 +86,8 @@ func (t *TestInterface) HandleNoop(conn net.Conn, tag string, parts []string, st
 }
 
 // HandleCheck exposes the check handler for testing
-func (t *TestInterface) HandleCheck(conn net.Conn, tag string, state *models.ClientState) {
-	message.HandleCheck(t.server, conn, tag, state)
+func (t *TestInterface) HandleCheck(conn net.Conn, tag string, parts []string, state *models.ClientState) {
+	message.HandleCheck(t.server, conn, tag, parts, state)
 }
 
 // HandleClose exposes the close handler for testing
