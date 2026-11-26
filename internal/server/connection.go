@@ -102,8 +102,9 @@ func handleClient(s *IMAPServer, conn net.Conn, state *models.ClientState) {
 		case "UNSUBSCRIBE":
 			mailbox.HandleUnsubscribe(s, conn, tag, parts, state)
 		case "LOGOUT":
-			auth.HandleLogout(s, conn, tag)
-			return
+			if auth.HandleLogout(s, conn, tag, parts) {
+				return
+			}
 		case "STARTTLS":
 			// Create a client handler wrapper for the auth package
 			clientHandler := func(conn net.Conn, state *models.ClientState) {

@@ -61,8 +61,8 @@ func (t *TestInterface) HandleRename(conn net.Conn, tag string, parts []string, 
 }
 
 // HandleLogout exposes the logout handler for testing
-func (t *TestInterface) HandleLogout(conn net.Conn, tag string) {
-	auth.HandleLogout(t.server, conn, tag)
+func (t *TestInterface) HandleLogout(conn net.Conn, tag string, parts []string) bool {
+	return auth.HandleLogout(t.server, conn, tag, parts)
 }
 
 // HandleIdle exposes the idle handler for testing
